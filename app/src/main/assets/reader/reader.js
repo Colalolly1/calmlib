@@ -779,6 +779,13 @@ var CalmReader = {
             (function(img) {
                 img.style.cursor = 'pointer';
                 img.addEventListener('click', function(e) {
+                    // Zone-aware: a full-page picture (covers, plates) used to
+                    // swallow EVERY tap, so the reader could not be paged past
+                    // it at all. Only the centre band opens the image; the
+                    // left/right page-turn zones must keep working over art.
+                    var w = window.innerWidth || 480;
+                    var x = (e.clientX != null) ? e.clientX : w / 2;
+                    if (x < w * 0.40 || x > w * 0.60) return;   // let the page turn happen
                     e.preventDefault(); e.stopPropagation();
                     try { CalmBridge.onImageTapped(img.src || img.getAttribute('data-src') || ''); } catch(ex) {}
                 });

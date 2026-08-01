@@ -11,7 +11,11 @@ data class ReadingSettings(
     val contrastBoost: Boolean = false,
     val boldMode: Boolean = false,
     val antiAliasing: Boolean = true,
-    val autoRefreshInterval: Int = 0,
+    // Default: full e-ink refresh on EVERY page turn. Partial updates leave
+    // ghosting and half-painted images on this panel, which reads as the
+    // reader misbehaving. The options remain for anyone who prefers fewer
+    // flashes, but the sane default is the one that always looks right.
+    val autoRefreshInterval: Int = 1,
     val justify: Boolean = true,
     val hyphenation: Boolean = true,
     val bionicReading: Boolean = false,
@@ -26,6 +30,7 @@ data class ReadingSettings(
         put("boldMode", boldMode)
         put("antiAliasing", antiAliasing)
         put("autoRefreshInterval", autoRefreshInterval)
+        put("refreshMigrated", true)
         put("justify", justify)
         put("hyphenation", hyphenation)
         put("bionicReading", bionicReading)
@@ -48,7 +53,13 @@ data class ReadingSettings(
                     contrastBoost = obj.optBoolean("contrastBoost", d.contrastBoost),
                     boldMode = obj.optBoolean("boldMode", d.boldMode),
                     antiAliasing = obj.optBoolean("antiAliasing", d.antiAliasing),
-                    autoRefreshInterval = obj.optInt("autoRefreshInterval", d.autoRefreshInterval),
+                    // One-time migration: books saved before every-page refresh
+                    // became the default carry a 0 nobody actually chose. The
+                    // "refreshMigrated" marker is written whenever settings are
+                    // saved from now on, so a deliberate Off is respected.
+                    autoRefreshInterval = obj.optInt("autoRefreshInterval", d.autoRefreshInterval).let { stored ->
+                        if (stored == 0 && !obj.optBoolean("refreshMigrated", false)) d.autoRefreshInterval else stored
+                    },
                     justify = obj.optBoolean("justify", d.justify),
                     hyphenation = obj.optBoolean("hyphenation", d.hyphenation),
                     bionicReading = obj.optBoolean("bionicReading", d.bionicReading),
