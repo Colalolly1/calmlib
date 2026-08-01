@@ -47,25 +47,82 @@ class EpubParser(private val file: File) : Closeable {
     }
 
     fun extractToDir(cacheDir: File): File {
-        val dir = File(cacheDir, "epub_${file.nameWithoutExtension}_${file.lastModified()}")
-        if (dir.exists() && dir.list()?.isNotEmpty() == true) return dir
-        dir.mkdirs()
-        val rootPath = dir.canonicalPath + File.separator
-        zip.entries().asSequence().forEach { entry ->
-            val target = File(dir, entry.name)
-            // Zip-slip guard: a malicious EPUB can carry entries named "../../x"
-            // that would otherwise be written outside the extraction directory.
-            if (!target.canonicalPath.startsWith(rootPath)) return@forEach
-            if (entry.isDirectory) {
-                target.mkdirs()
-            } else {
-                target.parentFile?.mkdirs()
-                zip.getInputStream(entry).use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
+        val name = "epub_${file.nameWithoutExtension.take(60)}_${file.lastModified()}"
+        val dir = File(cacheDir, name)
+        // A ".done" marker makes completion explicit. Presence of files is NOT
+        // completion: an extraction interrupted by a process kill used to leave
+        // a half-written directory that was trusted forever after, so the book
+        // was permanently missing chapters/images.
+        val done = File(dir, ".calm_complete")
+        if (done.exists()) return dir
+        if (dir.exists()) dir.deleteRecursively()
+
+        val staging = File(cacheDir, "$name.tmp")
+        if (staging.exists()) staging.deleteRecursively()
+        staging.mkdirs()
+        val rootPath = staging.canonicalPath + File.separator
+        var totalBytes = 0L
+        var entryCount = 0
+        try {
+            zip.entries().asSequence().forEach { entry ->
+                // Zip-bomb bound: a few-hundred-KB EPUB can expand to gigabytes
+                // and fill a user's device. Count what we actually write —
+                // entry.size is attacker-controlled metadata.
+                if (++entryCount > MAX_ENTRIES) throw IllegalStateException("too many entries")
+                val target = File(staging, entry.name)
+                // Zip-slip guard: a malicious EPUB can carry entries named "../../x"
+                // that would otherwise be written outside the extraction directory.
+                if (!target.canonicalPath.startsWith(rootPath)) return@forEach
+                if (entry.isDirectory) {
+                    target.mkdirs()
+                } else {
+                    target.parentFile?.mkdirs()
+                    zip.getInputStream(entry).use { input ->
+                        target.outputStream().use { output ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                totalBytes += n
+                                if (totalBytes > MAX_EXTRACT_BYTES) {
+                                    throw IllegalStateException("extraction exceeds ${MAX_EXTRACT_BYTES / 1024 / 1024}MB")
+                                }
+                                output.write(buf, 0, n)
+                            }
+                        }
+                    }
                 }
             }
+            done.parentFile?.mkdirs()
+            File(staging, ".calm_complete").writeText("ok")
+            if (!staging.renameTo(dir)) throw IllegalStateException("could not finalise extraction")
+        } catch (t: Throwable) {
+            staging.deleteRecursively()
+            throw t
         }
+        pruneOldExtractions(cacheDir, keep = dir.name)
         return dir
+    }
+
+    /**
+     * Extractions are keyed by file mtime, so re-saving a book (or importing a
+     * new edition) orphans the old directory. Unbounded, this quietly eats a
+     * user's storage — keep only the most recent few.
+     */
+    private fun pruneOldExtractions(cacheDir: File, keep: String) {
+        try {
+            cacheDir.listFiles()
+                ?.filter { it.isDirectory && it.name.startsWith("epub_") && it.name != keep }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(MAX_CACHED_BOOKS)
+                ?.forEach { it.deleteRecursively() }
+        } catch (_: Exception) { }
+    }
+
+    companion object {
+        private const val MAX_EXTRACT_BYTES = 400L * 1024 * 1024
+        private const val MAX_ENTRIES = 5000
+        private const val MAX_CACHED_BOOKS = 4
     }
 
     fun extractCover(): Bitmap? {

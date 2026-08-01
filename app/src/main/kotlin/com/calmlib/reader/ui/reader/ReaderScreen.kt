@@ -48,6 +48,8 @@ fun ReaderScreenFull(
     highlights: List<Highlight>,
     tocEntries: List<TocEntry>,
     errorMessage: String?,
+    noticeMessage: String? = null,
+    onDismissNotice: () -> Unit = {},
     dictWord: String,
     dictResult: String?,
     searchResults: List<Int>,
@@ -143,6 +145,24 @@ fun ReaderScreenFull(
                         style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 11.sp),
                     )
                 }
+            }
+        }
+
+        // Transient notice: informs without destroying the reading session.
+        if (noticeMessage != null && errorMessage == null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 28.dp)
+                    .background(Color(0xFFF2F2F2))
+                    .clickable(onClick = onDismissNotice)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                Text(
+                    noticeMessage,
+                    style = CalmTypography.metadata.copy(fontSize = 11.sp, color = Color(0xFF333333)),
+                )
             }
         }
 
