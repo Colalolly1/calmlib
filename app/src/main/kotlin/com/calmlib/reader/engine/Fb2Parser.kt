@@ -123,7 +123,15 @@ class Fb2Parser(private val file: File) {
                                     val href = parser.getAttributeValue(null, "l:href")
                                         ?: parser.getAttributeValue(null, "xlink:href") ?: ""
                                     val id = href.removePrefix("#")
-                                    sectionHtml.append("<img src=\"data:image/png;base64,${binaries[id] ?: ""}\" />")
+                                    // Payload is untrusted: anything outside the
+                                    // base64 alphabet could close the attribute
+                                    // and inject markup. Filter, don't escape.
+                                    val b64 = (binaries[id] ?: "").filter {
+                                        it.isLetterOrDigit() || it == '+' || it == '/' || it == '='
+                                    }
+                                    if (b64.isNotEmpty()) {
+                                        sectionHtml.append("<img src=\"data:image/png;base64,$b64\" />")
+                                    }
                                 }
                             }
                         }

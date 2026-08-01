@@ -1,5 +1,6 @@
 package com.calmlib.reader.ui.library
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -251,11 +252,13 @@ fun SettingsScreen(
                     Column(Modifier.padding(vertical = 8.dp, horizontal = 8.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text(entry.word, style = CalmTypography.bookTitle.copy(fontSize = 14.sp), modifier = Modifier.weight(1f))
-                            Text("Wikipedia",
+                            // No web link here: the Kompakt has no browser, so
+                            // ACTION_VIEW crashed with ActivityNotFoundException.
+                            Text("Copy",
                                 style = CalmTypography.metadata.copy(fontSize = 11.sp, color = Color(0xFF666666)),
                                 modifier = Modifier.clickable {
-                                    val url = "https://en.wikipedia.org/wiki/Special:Search?search=${Uri.encode(entry.word)}"
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    cm.setPrimaryClip(android.content.ClipData.newPlainText("word", "${'$'}{entry.word} — ${'$'}{entry.definition}"))
                                 })
                         }
                         Text(entry.definition.take(120), style = CalmTypography.metadata.copy(fontSize = 12.sp), maxLines = 2)

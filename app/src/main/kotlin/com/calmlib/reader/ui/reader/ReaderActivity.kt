@@ -38,6 +38,8 @@ class ReaderActivity : ComponentActivity() {
     companion object {
         const val EXTRA_BOOK_ID = "book_id"
         const val EXTRA_FILE_PATH = "file_path"
+        /** Chapter render target, written inside the book's extraction dir. */
+        private const val RENDER_FILE = ".calm_render.xhtml"
     }
 
     private lateinit var bookRepo: BookRepository
@@ -148,6 +150,9 @@ class ReaderActivity : ComponentActivity() {
     private var bookmarks = mutableStateOf<List<Bookmark>>(emptyList())
     private var highlights = mutableStateOf<List<Highlight>>(emptyList())
     private var dictResult = mutableStateOf<String?>(null)
+    /** Transient, dismissable banner. Distinct from errorMessage, which
+     *  REPLACES the reader — only unrecoverable load failures deserve that. */
+    private var noticeMessage = mutableStateOf<String?>(null)
     private var dictWord = mutableStateOf("")
     private var searchResults = mutableStateOf<List<Int>>(emptyList())
     private var searchSnippets = mutableStateOf<List<Pair<Int, String>>>(emptyList())
@@ -310,6 +315,8 @@ class ReaderActivity : ComponentActivity() {
                     highlights = highlights.value,
                     tocEntries = epubParser?.tableOfContents ?: fb2Parser?.tableOfContents ?: emptyList(),
                     errorMessage = errorMessage.value,
+                    noticeMessage = noticeMessage.value,
+                    onDismissNotice = { noticeMessage.value = null },
                     dictWord = dictWord.value,
                     dictResult = dictResult.value,
                     searchResults = searchResults.value,
@@ -562,7 +569,7 @@ class ReaderActivity : ComponentActivity() {
 
     private fun toggleTts() {
         if (isPdf.value) {
-            errorMessage.value = "Read-aloud isn't supported for PDFs (no extractable text per visible page)."
+            noticeMessage.value = "Read-aloud isn't available for PDFs."
             return
         }
         if (isSpeaking.value) {
@@ -578,11 +585,18 @@ class ReaderActivity : ComponentActivity() {
         // we need to bounce to main before touching it. Status != SUCCESS means there
         // is no TTS engine installed on the device (common on de-googled AOSP like the
         // Mudita) — surface that to the user rather than failing silently.
-        val engine = android.speech.tts.TextToSpeech(applicationContext) { status ->
+        // NB: this callback can fire BEFORE the constructor returns, so it must
+        // use its own reference — `tts` is not assigned yet. The old code
+        // configured `tts?` (null, silently doing nothing) and, on failure,
+        // nulled `tts` only for the assignment below to store the dead engine
+        // again — leaving read-aloud permanently broken on this device.
+        var initFailed = false
+        lateinit var engine: android.speech.tts.TextToSpeech
+        engine = android.speech.tts.TextToSpeech(applicationContext) { status ->
             runOnUiThread {
                 if (status == android.speech.tts.TextToSpeech.SUCCESS) {
-                    try { tts?.language = java.util.Locale.getDefault() } catch (_: Exception) {}
-                    tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    try { engine.language = java.util.Locale.getDefault() } catch (_: Exception) {}
+                    engine.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
                         override fun onStart(utteranceId: String?) {}
                         override fun onError(utteranceId: String?) {
                             runOnUiThread { isSpeaking.value = false }
@@ -601,15 +615,19 @@ class ReaderActivity : ComponentActivity() {
                     })
                     speakCurrentPage()
                 } else {
+                    // Transient notice, NOT errorMessage: that unmounts the
+                    // whole reader, so a missing speech engine used to destroy
+                    // a perfectly good reading session.
                     isSpeaking.value = false
-                    errorMessage.value = "No text-to-speech engine is installed on this device. " +
-                        "On a de-googled Mudita you can sideload eSpeak or Pico TTS from F-Droid."
-                    tts?.shutdown()
+                    initFailed = true
+                    noticeMessage.value = "No text-to-speech engine on this device. " +
+                        "You can sideload eSpeak or Pico TTS from F-Droid."
+                    try { engine.shutdown() } catch (_: Exception) {}
                     tts = null
                 }
             }
         }
-        tts = engine
+        if (!initFailed) tts = engine
     }
 
     private fun speakCurrentPage() {
@@ -619,18 +637,24 @@ class ReaderActivity : ComponentActivity() {
         // under translateY and would have read from the start of the chapter every time.
         webView?.evaluateJavascript("CalmReader.getCurrentPageText()") { result ->
             val cleaned = unescapeJsString(result)
-            if (cleaned.isBlank()) {
+            // A not-yet-ready document returns the literal "null", which the
+            // engine would happily read aloud as the word "null".
+            if (cleaned.isBlank() || cleaned == "null") {
                 runOnUiThread { isSpeaking.value = false }
                 return@evaluateJavascript
             }
             runOnUiThread {
-                tts?.speak(
+                val ok = tts?.speak(
                     cleaned,
                     android.speech.tts.TextToSpeech.QUEUE_FLUSH,
                     null,
                     "calm_${System.currentTimeMillis()}",
                 )
-                isSpeaking.value = true
+                // Only claim to be speaking if the engine accepted the job.
+                isSpeaking.value = ok == android.speech.tts.TextToSpeech.SUCCESS
+                if (ok != android.speech.tts.TextToSpeech.SUCCESS) {
+                    noticeMessage.value = "Read-aloud couldn't start."
+                }
             }
         }
     }
@@ -1092,13 +1116,14 @@ class ReaderActivity : ComponentActivity() {
     private fun loadHtmlContent(html: String, initialPage: Int = 0, initialCharOffset: Float = 0f) {
         val s = settings.value
         val fontCss = fontFamilyCss(s.fontFamily)
+        val safeHtml = sanitizeBookHtml(html)   // FB2/TXT bodies are untrusted too
         val fullHtml = """<!DOCTYPE html><html><head><meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
             <link rel="stylesheet" href="file:///android_asset/reader/reader.css" />
             <script src="file:///android_asset/reader/reader.js"></script>
             <style>body { font-size: ${s.fontSize}px; line-height: ${s.lineSpacing};
                 padding: ${s.marginVertical}px ${s.marginHorizontal}px; font-family: $fontCss; }</style>
-            </head><body class="paginated">$html</body></html>""".trimIndent()
+            </head><body class="paginated">$safeHtml</body></html>""".trimIndent()
         val gen = ++loadGeneration
         lastCharOffset = -1   // stale offsets must not leak across section loads
         hasLiveContent = false
@@ -1294,14 +1319,17 @@ class ReaderActivity : ComponentActivity() {
         val chapterFile = findChapterFile(dir, parser.contentDir + chapter.href)
             ?: findChapterFile(dir, chapter.href)
         val baseUrl = "file://${chapterFile?.parentFile?.absolutePath ?: dir.absolutePath}/"
-        val cssPath = "file:///android_asset/reader/reader.css"
-        val jsPath = "file:///android_asset/reader/reader.js"
+        // Relative: reader.js/css are copied next to the rendered chapter.
+        val cssPath = "reader.css"
+        val jsPath = "reader.js"
 
-        val chapterContent = try {
-            chapterFile?.readText() ?: parser.getChapterContent(index) ?: "<p>Chapter not found</p>"
-        } catch (_: Exception) {
-            parser.getChapterContent(index) ?: "<p>Chapter not found</p>"
-        }
+        val chapterContent = sanitizeBookHtml(
+            try {
+                chapterFile?.readText() ?: parser.getChapterContent(index) ?: "<p>Chapter not found</p>"
+            } catch (_: Exception) {
+                parser.getChapterContent(index) ?: "<p>Chapter not found</p>"
+            }
+        )
 
         val s = settings.value
         val fontCss = fontFamilyCss(s.fontFamily)
@@ -1341,14 +1369,73 @@ class ReaderActivity : ComponentActivity() {
         pendingGoToEnd = goToEnd
         pendingRestoreChar = initialCharOffset
         pendingRestorePage = initialPage
+
+        // Render from a REAL file in the chapter's own directory rather than
+        // loadDataWithBaseURL. A genuine file:// document loads its
+        // same-directory images with only allowFileAccess — so the dangerous
+        // cross-origin file flags (which also handed book scripts the whole
+        // filesystem) are no longer needed. reader.js/css are copied in
+        // alongside so every subresource is same-directory too.
+        val renderDir = chapterFile?.parentFile ?: dir
+        val renderFile = try {
+            copyReaderAssetsTo(renderDir)
+            File(renderDir, RENDER_FILE).apply { writeText(styled) }
+        } catch (e: Exception) {
+            android.util.Log.d("CalmNav", "render file write failed: $e")
+            null
+        }
+
         withWebView { wv ->
             loadWithWatchdog(wv, gen) {
-                // ?g=<gen> tags the load for onPageFinished attribution. Relative
-                // asset URLs still resolve against the PATH, so chapter images
-                // ("images/x.jpg") are unaffected by the query.
-                wv.loadDataWithBaseURL("$baseUrl?g=$gen", styled, "text/html", "utf-8", null)
+                if (renderFile != null) {
+                    // #g=<gen> tags the load for attribution; a fragment never
+                    // affects file resolution or relative asset paths.
+                    wv.loadUrl("file://${renderFile.absolutePath}#g=$gen")
+                } else {
+                    wv.loadDataWithBaseURL("$baseUrl?g=$gen", styled, "text/html", "utf-8", null)
+                }
             }
         }
+    }
+
+    /** Put reader.js/reader.css next to the rendered chapter so the document
+     *  only ever loads same-directory subresources. */
+    private fun copyReaderAssetsTo(dir: File) {
+        listOf("reader.js", "reader.css").forEach { name ->
+            val target = File(dir, name)
+            val src = assets.open("reader/$name").use { it.readBytes() }
+            if (!target.exists() || target.length() != src.size.toLong()) {
+                target.writeBytes(src)
+            }
+        }
+    }
+
+    /**
+     * Remove executable content from book-supplied HTML.
+     *
+     * An EPUB is a zip a stranger emailed you, and its chapters are arbitrary
+     * XHTML. Any <script> in one runs inside our reader document — same context
+     * as reader.js — so it could call the CalmBridge JavaScript interface
+     * (faking reading positions, spamming saves), rewrite the page, or probe
+     * local files. No legitimate book needs scripting to be read.
+     */
+    private fun sanitizeBookHtml(html: String): String {
+        var out = html.replace(
+            Regex("<script\\b[^>]*>.*?</script\\s*>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), ""
+        )
+        // Unclosed/truncated script tag: drop from the tag to end of document.
+        out = out.replace(Regex("<script\\b[^>]*>.*", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), "")
+        out = out.replace(
+            Regex("<(iframe|object|embed|frame|frameset)\\b", RegexOption.IGNORE_CASE), "<x-blocked-$1 "
+        )
+        // Inline handlers: on*="…" / on*='…' / on*=bare
+        out = out.replace(Regex("\\son[a-zA-Z]+\\s*=\\s*\"[^\"]*\"", RegexOption.IGNORE_CASE), "")
+        out = out.replace(Regex("\\son[a-zA-Z]+\\s*=\\s*'[^']*'", RegexOption.IGNORE_CASE), "")
+        out = out.replace(Regex("\\son[a-zA-Z]+\\s*=\\s*[^\\s>]+", RegexOption.IGNORE_CASE), "")
+        // javascript: / data:text/html URLs in href/src
+        out = out.replace(Regex("(href|src)\\s*=\\s*([\"'])\\s*javascript:[^\"']*\\2", RegexOption.IGNORE_CASE), "$1=$2#$2")
+        out = out.replace(Regex("(href|src)\\s*=\\s*([\"'])\\s*data:text/html[^\"']*\\2", RegexOption.IGNORE_CASE), "$1=$2#$2")
+        return out
     }
 
     private fun findChapterFile(dir: File, href: String): File? {
@@ -1457,13 +1544,18 @@ class ReaderActivity : ComponentActivity() {
         return WebView(this).apply {
             setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             setBackgroundColor(android.graphics.Color.WHITE)
-            settings.javaScriptEnabled = true
+            settings.javaScriptEnabled = true   // reader.js drives pagination
+            // allowFileAccess lets a file:// document pull in its OWN directory's
+            // images/CSS/fonts, which EPUB chapters need.
             settings.allowFileAccess = true
-            // Allow EPUB chapters loaded via `file:///` to fetch their own images, CSS,
-            // and fonts from the same extracted directory. Without these two flags
-            // Android WebView blocks cross-file:// requests and images don't load.
-            @Suppress("DEPRECATION") settings.allowFileAccessFromFileURLs = true
-            @Suppress("DEPRECATION") settings.allowUniversalAccessFromFileURLs = true
+            // The two cross-origin file flags are deliberately OFF. They were on
+            // to fix image loading, but they also let any <script> inside a book
+            // read arbitrary local files (the app database, other books, shared
+            // storage). Book scripts are now stripped (sanitizeBookHtml) AND the
+            // capability is removed — either alone would do; both is cheap.
+            @Suppress("DEPRECATION") settings.allowFileAccessFromFileURLs = false
+            @Suppress("DEPRECATION") settings.allowUniversalAccessFromFileURLs = false
+            settings.allowContentAccess = false
             settings.loadWithOverviewMode = false
             settings.useWideViewPort = false
             settings.setSupportZoom(false)
@@ -1550,7 +1642,7 @@ class ReaderActivity : ComponentActivity() {
                     // untagged file:// commit must still count as the current
                     // generation, or the watchdog keeps re-issuing right over
                     // the live load and aborts it forever.
-                    val g = Regex("[?&]g=(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
+                    val g = Regex("[?&#]g=(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
                         ?: if (url.startsWith("file://")) loadGeneration else return
                     if (g > lastStartedGeneration) lastStartedGeneration = g
                 }
@@ -1567,7 +1659,7 @@ class ReaderActivity : ComponentActivity() {
                     // Untagged file:// URLs get benefit of the doubt (all our
                     // loads are file://); anything else (chrome-error pages,
                     // data: fallbacks) must NOT disarm the watchdog.
-                    val finishedGen = Regex("[?&]g=(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
+                    val finishedGen = Regex("[?&#]g=(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
                         ?: if (url.startsWith("file://")) loadGeneration else return
                     android.util.Log.d("CalmNav", "onPageFinished url=$url gen=$finishedGen")
                     if (finishedGen > lastFinishedGeneration) lastFinishedGeneration = finishedGen

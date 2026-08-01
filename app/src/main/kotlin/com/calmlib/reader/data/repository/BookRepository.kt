@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import com.calmlib.reader.util.readUpTo
 
 class BookRepository(private val context: Context) {
     private val db = AppDatabase.get(context)
@@ -324,7 +325,7 @@ class BookRepository(private val context: Context) {
      */
     private fun sniffFormat(file: File): BookFormat? {
         return try {
-            val head = file.inputStream().use { it.readNBytes(4096) }
+            val head = file.inputStream().use { it.readUpTo(4096) }
             if (head.size < 4) return null
             when {
                 head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte() -> BookFormat.EPUB

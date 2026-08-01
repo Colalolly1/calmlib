@@ -14,3 +14,8 @@ captures/
 
 # Machine-local SDK paths
 local.properties
+
+# Release signing secrets — never commit
+keystore.properties
+*.jks
+*.keystore

@@ -36,7 +36,17 @@ class PdfToEpubConverter(private val context: Context) {
         outputDir: File,
         onProgress: (Progress) -> Unit = {},
     ): Result = withContext(Dispatchers.IO) {
-        val document = PDDocument.load(pdfFile)
+        // Loading is itself a parse of untrusted input: encrypted, truncated or
+        // malformed PDFs throw here, and outside the try nothing caught it —
+        // one bad file crashed the whole app. Throwable, not Exception:
+        // PDFBox raises OutOfMemoryError on large/hostile documents.
+        val document = try {
+            PDDocument.load(pdfFile)
+        } catch (t: Throwable) {
+            return@withContext Result.Failure(
+                "Couldn't read this PDF — it may be password-protected or damaged."
+            )
+        }
         try {
             val pageCount = document.numberOfPages
             if (pageCount == 0) return@withContext Result.Failure("PDF has no pages")
@@ -73,6 +83,8 @@ class PdfToEpubConverter(private val context: Context) {
             writeEpub(output, title, author, chapters)
 
             Result.Success(output)
+        } catch (e: OutOfMemoryError) {
+            Result.Failure("This PDF is too large to convert on this device.")
         } catch (e: Exception) {
             Result.Failure("Conversion failed: ${e.message ?: e.javaClass.simpleName}")
         } finally {

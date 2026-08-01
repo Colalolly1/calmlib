@@ -24,7 +24,7 @@
 // load" signal. Without it the native watchdog cannot tell a live slow load
 // from a dropped one and re-issues right over it, aborting it every 2.5s.
 try {
-    var __calmG = /[?&]g=(\d+)/.exec(location.href);
+    var __calmG = /[?&#]g=(\d+)/.exec(location.href);
     CalmBridge.onDocStarted(__calmG ? parseInt(__calmG[1], 10) : -1);
 } catch (e) {}
 

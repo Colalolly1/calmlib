@@ -60,7 +60,10 @@ abstract class AppDatabase : RoomDatabase() {
                     "calmlib.db"
                 )
                     .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
-                    .fallbackToDestructiveMigration()
+                    // NO fallbackToDestructiveMigration: a forgotten migration
+                    // would silently delete every book, highlight and reading
+                    // position the user has. Crashing loudly in development is
+                    // the correct trade; users never lose their library.
                     .build()
                     .also { instance = it }
             }
