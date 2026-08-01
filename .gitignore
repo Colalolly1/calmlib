@@ -1,0 +1,16 @@
+# Build output
+build/
+app/build/
+.gradle/
+.kotlin/
+
+# Packaged APKs (rebuildable; 51MB each)
+*.apk
+
+# IDE / OS
+.idea/
+captures/
+.DS_Store
+
+# Machine-local SDK paths
+local.properties

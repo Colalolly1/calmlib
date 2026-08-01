@@ -1,0 +1,124 @@
+@font-face {
+    font-family: 'CalmSerif';
+    src: url('../fonts/literata_regular.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+}
+@font-face {
+    font-family: 'CalmSerif';
+    src: url('../fonts/literata_bold.ttf') format('truetype');
+    font-weight: bold;
+    font-style: normal;
+}
+@font-face {
+    font-family: 'CalmSans';
+    src: url('../fonts/atkinson_regular.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+}
+@font-face {
+    font-family: 'CalmSans';
+    src: url('../fonts/atkinson_bold.ttf') format('truetype');
+    font-weight: bold;
+    font-style: normal;
+}
+@font-face {
+    font-family: 'CalmMono';
+    src: url('../fonts/jetbrains_mono_regular.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+}
+
+* {
+    -webkit-font-smoothing: none !important;
+    -webkit-text-size-adjust: none !important;
+    transition: none !important;
+    animation: none !important;
+}
+
+html {
+    height: 100vh;
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+}
+
+body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-family: serif;
+    font-size: 18px;
+    line-height: 1.6;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+    -webkit-hyphens: auto;
+    text-rendering: optimizeLegibility;
+    /* Naturally tall flow; the JS uses transform: translateY for pagination. */
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+    box-sizing: border-box;
+    will-change: transform;
+}
+
+img, svg, video, canvas {
+    max-width: 100% !important;
+    height: auto !important;
+}
+
+a { color: #000000 !important; }
+
+::selection {
+    background: #000000;
+    color: #ffffff;
+}
+
+/* E-Ink contrast boost — duplicate the glyph half a px in each direction to
+   thicken strokes without changing layout. Far more readable than just bumping
+   font-weight, especially with smaller fonts on a low-DPI E-Ink panel. */
+body.contrast-boost, body.contrast-boost * {
+    font-weight: 600 !important;
+    text-shadow: 0 0 0.3px currentColor, 0.3px 0 0 currentColor !important;
+    color: #000 !important;
+}
+
+/* Hard bold for users who want maximum thickness. Goes further than the
+   browser's normal bold weight — adds a pixel-width shadow on the right. */
+body.bold-mode, body.bold-mode * {
+    font-weight: 700 !important;
+    text-shadow: 0.4px 0 0 currentColor, 0 0 0.4px currentColor !important;
+    color: #000 !important;
+}
+
+body.no-antialias {
+    -webkit-font-smoothing: none !important;
+    font-smooth: never !important;
+}
+
+/* User highlights — underlined for E-Ink visibility */
+.highlight {
+    text-decoration: underline !important;
+    text-decoration-thickness: 2px !important;
+    text-underline-offset: 2px !important;
+    background: #f0f0f0 !important;
+    padding: 0 1px;
+}
+
+/* Reading options */
+body.justify {
+    text-align: justify;
+}
+body:not(.justify) {
+    text-align: left;
+}
+body.no-hyphens, body.no-hyphens * {
+    hyphens: none !important;
+    -webkit-hyphens: none !important;
+}
+b.bf {
+    font-weight: 700;
+}
