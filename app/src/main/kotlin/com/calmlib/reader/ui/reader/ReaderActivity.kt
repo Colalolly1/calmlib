@@ -38,8 +38,13 @@ class ReaderActivity : ComponentActivity() {
     companion object {
         const val EXTRA_BOOK_ID = "book_id"
         const val EXTRA_FILE_PATH = "file_path"
-        /** Chapter render target, written inside the book's extraction dir. */
-        private const val RENDER_FILE = ".calm_render.xhtml"
+        /** Chapter render target, written inside the book's extraction dir.
+         *  MUST end .html: WebView picks the parser from the file extension,
+         *  and .xhtml selects STRICT XML — one unclosed tag in a publisher's
+         *  markup then kills the whole document (blank page, reader.js never
+         *  runs, book unreadable). .html gets the lenient HTML parser, which
+         *  is what these files actually need. */
+        private val BLOCKED_TAGS = setOf("iframe", "object", "embed", "frame", "frameset", "applet")
     }
 
     private lateinit var bookRepo: BookRepository
@@ -1298,6 +1303,14 @@ class ReaderActivity : ComponentActivity() {
     }
 
     private fun loadChapter(index: Int, goToEnd: Boolean = false, initialPage: Int = 0, initialCharOffset: Float = 0f) {
+        try { loadChapterInner(index, goToEnd, initialPage, initialCharOffset) }
+        catch (t: Throwable) {
+            android.util.Log.d("CalmNav", "loadChapter THREW: ${t.javaClass.name}: ${t.message}")
+            errorMessage.value = "Couldn't render this chapter (${t.javaClass.simpleName})."
+        }
+    }
+
+    private fun loadChapterInner(index: Int, goToEnd: Boolean, initialPage: Int, initialCharOffset: Float) {
         val parser = epubParser ?: return
         val dir = epubDir ?: return
         if (parser.chapters.isEmpty()) {
@@ -1319,9 +1332,8 @@ class ReaderActivity : ComponentActivity() {
         val chapterFile = findChapterFile(dir, parser.contentDir + chapter.href)
             ?: findChapterFile(dir, chapter.href)
         val baseUrl = "file://${chapterFile?.parentFile?.absolutePath ?: dir.absolutePath}/"
-        // Relative: reader.js/css are copied next to the rendered chapter.
-        val cssPath = "reader.css"
-        val jsPath = "reader.js"
+        val cssPath = "file:///android_asset/reader/reader.css"
+        val jsPath = "file:///android_asset/reader/reader.js"
 
         val chapterContent = sanitizeBookHtml(
             try {
@@ -1370,42 +1382,16 @@ class ReaderActivity : ComponentActivity() {
         pendingRestoreChar = initialCharOffset
         pendingRestorePage = initialPage
 
-        // Render from a REAL file in the chapter's own directory rather than
-        // loadDataWithBaseURL. A genuine file:// document loads its
-        // same-directory images with only allowFileAccess — so the dangerous
-        // cross-origin file flags (which also handed book scripts the whole
-        // filesystem) are no longer needed. reader.js/css are copied in
-        // alongside so every subresource is same-directory too.
-        val renderDir = chapterFile?.parentFile ?: dir
-        val renderFile = try {
-            copyReaderAssetsTo(renderDir)
-            File(renderDir, RENDER_FILE).apply { writeText(styled) }
-        } catch (e: Exception) {
-            android.util.Log.d("CalmNav", "render file write failed: $e")
-            null
-        }
-
+        // Rendering via loadDataWithBaseURL, which is what has always worked on
+        // this device. (Writing the chapter to a real file and loadUrl-ing it
+        // was tried so the cross-origin file flags could stay off; on this
+        // WebView build it produced a blank document with reader.js never
+        // executing, for both .xhtml and .html targets. Not worth the risk —
+        // book scripts are stripped in sanitizeBookHtml, which is the fix that
+        // actually matters.)
         withWebView { wv ->
             loadWithWatchdog(wv, gen) {
-                if (renderFile != null) {
-                    // #g=<gen> tags the load for attribution; a fragment never
-                    // affects file resolution or relative asset paths.
-                    wv.loadUrl("file://${renderFile.absolutePath}#g=$gen")
-                } else {
-                    wv.loadDataWithBaseURL("$baseUrl?g=$gen", styled, "text/html", "utf-8", null)
-                }
-            }
-        }
-    }
-
-    /** Put reader.js/reader.css next to the rendered chapter so the document
-     *  only ever loads same-directory subresources. */
-    private fun copyReaderAssetsTo(dir: File) {
-        listOf("reader.js", "reader.css").forEach { name ->
-            val target = File(dir, name)
-            val src = assets.open("reader/$name").use { it.readBytes() }
-            if (!target.exists() || target.length() != src.size.toLong()) {
-                target.writeBytes(src)
+                wv.loadDataWithBaseURL("$baseUrl?g=$gen", styled, "text/html", "utf-8", null)
             }
         }
     }
@@ -1420,23 +1406,94 @@ class ReaderActivity : ComponentActivity() {
      * local files. No legitimate book needs scripting to be read.
      */
     private fun sanitizeBookHtml(html: String): String {
-        var out = html.replace(
-            Regex("<script\\b[^>]*>.*?</script\\s*>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), ""
-        )
-        // Unclosed/truncated script tag: drop from the tag to end of document.
-        out = out.replace(Regex("<script\\b[^>]*>.*", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)), "")
-        out = out.replace(
-            Regex("<(iframe|object|embed|frame|frameset)\\b", RegexOption.IGNORE_CASE), "<x-blocked-$1 "
-        )
-        // Inline handlers: on*="…" / on*='…' / on*=bare
-        out = out.replace(Regex("\\son[a-zA-Z]+\\s*=\\s*\"[^\"]*\"", RegexOption.IGNORE_CASE), "")
-        out = out.replace(Regex("\\son[a-zA-Z]+\\s*=\\s*'[^']*'", RegexOption.IGNORE_CASE), "")
-        out = out.replace(Regex("\\son[a-zA-Z]+\\s*=\\s*[^\\s>]+", RegexOption.IGNORE_CASE), "")
-        // javascript: / data:text/html URLs in href/src
-        out = out.replace(Regex("(href|src)\\s*=\\s*([\"'])\\s*javascript:[^\"']*\\2", RegexOption.IGNORE_CASE), "$1=$2#$2")
-        out = out.replace(Regex("(href|src)\\s*=\\s*([\"'])\\s*data:text/html[^\"']*\\2", RegexOption.IGNORE_CASE), "$1=$2#$2")
-        return out
+        // Deliberately NOT regex. Java's engine recurses per character, so a
+        // pattern like "<script...>.*" over a multi-hundred-KB chapter throws
+        // StackOverflowError — an Error, so it escaped every catch and killed
+        // the load coroutine silently: books simply stopped opening. Manual
+        // scanning is also far faster on the Kompakt's CPU.
+        val sb = StringBuilder(html.length)
+        var i = 0
+        while (i < html.length) {
+            val c = html[i]
+            if (c != '<') { sb.append(c); i++; continue }
+            val tagEnd = html.indexOf('>', i)
+            if (tagEnd < 0) { sb.append(html, i, html.length); break }
+            val tag = html.substring(i, tagEnd + 1)
+            val name = tagNameOf(tag)
+            when {
+                name == "script" -> {
+                    // Skip the element entirely, including its body.
+                    val close = indexOfIgnoreCase(html, "</script", tagEnd)
+                    i = if (close < 0) html.length else (html.indexOf('>', close).let { if (it < 0) html.length else it + 1 })
+                }
+                name in BLOCKED_TAGS -> {
+                    val close = indexOfIgnoreCase(html, "</$name", tagEnd)
+                    i = if (close < 0) tagEnd + 1 else (html.indexOf('>', close).let { if (it < 0) html.length else it + 1 })
+                }
+                else -> {
+                    sb.append(scrubTag(tag))
+                    i = tagEnd + 1
+                }
+            }
+        }
+        return sb.toString()
     }
+
+    private fun tagNameOf(tag: String): String {
+        var k = 1
+        if (k < tag.length && tag[k] == '/') k++
+        val start = k
+        while (k < tag.length && (tag[k].isLetterOrDigit() || tag[k] == '-')) k++
+        return tag.substring(start, k).lowercase()
+    }
+
+    /** Strip event handlers and script-bearing URLs from a single tag. */
+    private fun scrubTag(tag: String): String {
+        val lower = tag.lowercase()
+        if (!lower.contains(" on") && !lower.contains("javascript:") && !lower.contains("data:text/html")) return tag
+        val out = StringBuilder(tag.length)
+        var i = 0
+        while (i < tag.length) {
+            // An on*= attribute always starts after whitespace.
+            if (tag[i].isWhitespace() && startsWithIgnoreCase(tag, "on", i + 1)) {
+                var j = i + 3
+                while (j < tag.length && tag[j].isLetter()) j++
+                var k = j
+                while (k < tag.length && tag[k].isWhitespace()) k++
+                if (k < tag.length && tag[k] == '=') {
+                    k++
+                    while (k < tag.length && tag[k].isWhitespace()) k++
+                    if (k < tag.length && (tag[k] == '"' || tag[k] == '\'')) {
+                        val quote = tag[k]
+                        val close = tag.indexOf(quote, k + 1)
+                        i = if (close < 0) tag.length else close + 1
+                    } else {
+                        while (k < tag.length && !tag[k].isWhitespace() && tag[k] != '>') k++
+                        i = k
+                    }
+                    continue
+                }
+            }
+            out.append(tag[i]); i++
+        }
+        var result = out.toString()
+        for (scheme in listOf("javascript:", "data:text/html")) {
+            var idx = indexOfIgnoreCase(result, scheme, 0)
+            while (idx >= 0) {
+                result = result.substring(0, idx) + "blocked:" + result.substring(idx + scheme.length)
+                idx = indexOfIgnoreCase(result, scheme, idx + 8)
+            }
+        }
+        return result
+    }
+
+    private fun startsWithIgnoreCase(s: String, prefix: String, at: Int): Boolean {
+        if (at < 0 || at + prefix.length > s.length) return false
+        return s.regionMatches(at, prefix, 0, prefix.length, ignoreCase = true)
+    }
+
+    private fun indexOfIgnoreCase(s: String, needle: String, from: Int): Int =
+        s.indexOf(needle, from.coerceAtLeast(0), ignoreCase = true)
 
     private fun findChapterFile(dir: File, href: String): File? {
         // Hrefs in the OPF are URL-encoded ("chapter%201.xhtml") while the files
@@ -1548,13 +1605,19 @@ class ReaderActivity : ComponentActivity() {
             // allowFileAccess lets a file:// document pull in its OWN directory's
             // images/CSS/fonts, which EPUB chapters need.
             settings.allowFileAccess = true
-            // The two cross-origin file flags are deliberately OFF. They were on
-            // to fix image loading, but they also let any <script> inside a book
-            // read arbitrary local files (the app database, other books, shared
-            // storage). Book scripts are now stripped (sanitizeBookHtml) AND the
-            // capability is removed — either alone would do; both is cheap.
-            @Suppress("DEPRECATION") settings.allowFileAccessFromFileURLs = false
-            @Suppress("DEPRECATION") settings.allowUniversalAccessFromFileURLs = false
+            // file->file access must stay ON: the chapter document lives under
+            // the book's file:// path while reader.js/css live in
+            // file:///android_asset, and with this off the WebView blocks our
+            // OWN script — the reader silently never paginates.
+            @Suppress("DEPRECATION") settings.allowFileAccessFromFileURLs = true
+            // Universal access is required on this WebView build: with it off,
+            // a loadDataWithBaseURL document against a file:// base never
+            // commits at all (no onPageStarted, no script, blank reader) —
+            // measured on-device, twice. The security fix that actually
+            // matters is sanitizeBookHtml: book content is stripped of scripts
+            // and handlers before it is ever handed to the renderer, so there
+            // is no book JS left to exercise this capability.
+            @Suppress("DEPRECATION") settings.allowUniversalAccessFromFileURLs = true
             settings.allowContentAccess = false
             settings.loadWithOverviewMode = false
             settings.useWideViewPort = false
@@ -1735,8 +1798,13 @@ class ReaderActivity : ComponentActivity() {
                     // a few ms and we stand down — one tap, one action. The delay
                     // is invisible next to the E-Ink refresh itself.
                     postDelayed({
-                        if (System.currentTimeMillis() - lastImageTapMs < 450) return@postDelayed
                         if (fullscreenImageUrl.value != null) return@postDelayed
+                        val inTurnZone = x < w * 0.40f || x > w * 0.60f
+                        // Stand down for an image tap ONLY in the centre band.
+                        // Deferring in the turn zones made full-page pictures
+                        // (covers, plates) impossible to page past: the image
+                        // absorbed every tap and the book was stuck.
+                        if (!inTurnZone && System.currentTimeMillis() - lastImageTapMs < 450) return@postDelayed
                         android.util.Log.d("CalmNav", "tapZone x=$x w=$w")
                         when {
                             x < w * 0.40f -> prevPage()

@@ -45,7 +45,7 @@ class SettingsRepository(context: Context) {
             contrastBoost = prefs[Keys.contrastBoost] ?: false,
             boldMode = prefs[Keys.boldMode] ?: false,
             antiAliasing = prefs[Keys.antiAliasing] ?: true,
-            autoRefreshInterval = prefs[Keys.autoRefresh] ?: 0,
+            autoRefreshInterval = prefs[Keys.autoRefresh] ?: 1,   // every page by default
             justify = prefs[Keys.justify] ?: true,
             hyphenation = prefs[Keys.hyphenation] ?: true,
             bionicReading = prefs[Keys.bionic] ?: false,
