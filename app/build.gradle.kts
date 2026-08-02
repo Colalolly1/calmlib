@@ -30,9 +30,9 @@ android {
     val storePathValue = keystoreProps.getProperty("storeFile") ?: System.getenv("CALMLIB_STORE_FILE")
 
     signingConfigs {
-        if (storePathValue != null && file(storePathValue).exists()) {
+        if (storePathValue != null && rootProject.file(storePathValue).exists()) {
             create("release") {
-                storeFile = file(storePathValue)
+                storeFile = rootProject.file(storePathValue)
                 storePassword = keystoreProps.getProperty("storePassword") ?: System.getenv("CALMLIB_STORE_PASSWORD")
                 keyAlias = keystoreProps.getProperty("keyAlias") ?: System.getenv("CALMLIB_KEY_ALIAS")
                 keyPassword = keystoreProps.getProperty("keyPassword") ?: System.getenv("CALMLIB_KEY_PASSWORD")
