@@ -24,6 +24,10 @@ It's called **CalmLib**, it's free and open source (AGPL), and it has **no inter
 permission at all** — the app literally cannot phone home, because Android never grants it
 the ability to. No accounts, no sync, no store, no telemetry, no browser.
 
+*(Attach these four when you post — Discourse takes drag-and-drop: `docs/screenshots/library.png`,
+`reading.png`, `dictionary.png`, `settings.png`. Put the library and reading shots near the top,
+the dictionary one beside the dictionary bullet.)*
+
 **What it does**
 
 - Reads EPUB, PDF, TXT and FB2, with a built-in PDF→EPUB converter for PDFs that won't reflow

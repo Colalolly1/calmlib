@@ -6,6 +6,18 @@ CalmLib is built around one idea: reading should feel like paper. No accounts, n
 sync, no store, no browser, no network access at all — the app doesn't even hold
 the INTERNET permission. Your books and your reading life stay on your device.
 
+## What it looks like
+
+| Library | Reading |
+|---|---|
+| ![The library](docs/screenshots/library.png) | ![A page of text](docs/screenshots/reading.png) |
+
+| Offline dictionary | Live-preview settings |
+|---|---|
+| ![Dictionary lookup](docs/screenshots/dictionary.png) | ![Reading settings](docs/screenshots/settings.png) |
+
+*Screenshots from a Mudita Kompakt (480×800 e-ink).*
+
 ## Features
 
 - **Formats**: EPUB, PDF, TXT, FB2 — plus a built-in PDF→EPUB converter for
