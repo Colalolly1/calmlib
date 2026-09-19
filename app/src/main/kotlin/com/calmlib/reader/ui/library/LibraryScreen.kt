@@ -78,6 +78,7 @@ fun LibraryScreen(
     val todaysPick by viewModel.todaysPick.collectAsStateWithLifecycle()
     val newArrivals by viewModel.newArrivals.collectAsStateWithLifecycle()
     val myShelf by viewModel.myShelf.collectAsStateWithLifecycle()
+    val collectionBooks by viewModel.collectionBooks.collectAsStateWithLifecycle()
     val pinnedIds by viewModel.pinnedIds.collectAsStateWithLifecycle()
 
     var selectionMode by remember { mutableStateOf(false) }
@@ -123,9 +124,17 @@ fun LibraryScreen(
         ActivityResultContracts.OpenDocument()
     ) { uri: Uri? -> uri?.let { viewModel.importBook(it) } }
 
-    val displayedBooks = viewModel.displayedBooks
+    // Derived from observed state so the shelves redraw the moment a filter,
+    // search or collection result arrives. (Reading the view model's plain
+    // getter here left the screen showing stale or empty lists.)
+    val isSearching = searchQuery.isNotEmpty()
+    val displayedBooks = when {
+        searchQuery.length >= 2 -> searchResults
+        selectedCollectionId != null -> collectionBooks
+        else -> books
+    }
     val selectedCollection = collections.find { it.id == selectedCollectionId }
-    val showCurrentlyReading = !viewModel.isSearching && selectedCollection == null
+    val showCurrentlyReading = !isSearching && selectedCollection == null
     val totalBooks = formatCounts.values.sum()
     // Only offer tabs for formats the library actually holds; EPUB and PDF always.
     val formatTabs = listOf("EPUB", "PDF") + listOf("TXT", "FB2").filter { (formatCounts[it] ?: 0) > 0 }
@@ -311,18 +320,18 @@ fun LibraryScreen(
         // ── Shelves ────────────────────────────────────────────────────────
         val libraryIsTrulyEmpty = totalBooks == 0 && currentlyReading.isEmpty()
         when {
-            libraryIsTrulyEmpty && !viewModel.isSearching -> {
+            libraryIsTrulyEmpty && !isSearching -> {
                 EmptyLibrary(
                     onAddBook = { filePicker.launch(BOOK_MIME_TYPES) },
                     onScanDevice = onRequestScan,
                 )
             }
-            displayedBooks.isEmpty() && viewModel.isSearching -> {
+            displayedBooks.isEmpty() && isSearching -> {
                 Box(Modifier.fillMaxWidth().padding(top = 64.dp), contentAlignment = Alignment.Center) {
                     Text("No books match “${searchQuery.trim()}”.", style = CalmTypography.emptyBody)
                 }
             }
-            displayedBooks.isEmpty() && !viewModel.isSearching -> {
+            displayedBooks.isEmpty() && !isSearching -> {
                 NoMatchesHere(
                     formatFilters = formatFilters,
                     selectedCollection = selectedCollection,
@@ -334,7 +343,7 @@ fun LibraryScreen(
             }
             else -> {
                 val shelfLabel = when {
-                    viewModel.isSearching -> "Found"
+                    isSearching -> "Found"
                     selectedCollection != null -> selectedCollection.name
                     activeFormat != null -> "$activeFormat books"
                     else -> "All books"
