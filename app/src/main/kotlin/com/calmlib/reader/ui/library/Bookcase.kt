@@ -2,6 +2,7 @@ package com.calmlib.reader.ui.library
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -29,6 +30,7 @@ private const val MIN_SHELVES = 3
 private val CASE_MARGIN = 16.dp
 private val SIDE_BOARD = 9.dp
 private val INNER_PAD = 12.dp
+private val BackPanel = Color(0xFFF1F1F1)
 
 /**
  * The home page: a bookcase holding only the books you've chosen to read.
@@ -112,45 +114,30 @@ private fun Bookcase(
 ) {
     val rows = books.chunked(PER_SHELF)
     Column(Modifier.fillMaxWidth().padding(horizontal = CASE_MARGIN)) {
-        // Top board
-        Board(height = 7.dp)
-        Row(Modifier.fillMaxWidth()) {
+        Crown()
+        // IntrinsicSize.Min lets the side boards stretch to the full height of the shelves.
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
             SideBoard()
             Column(Modifier.weight(1f)) {
                 repeat(shelves) { i ->
                     val row = rows.getOrNull(i) ?: emptyList()
-                    // Air above the books, then the books standing on the plank.
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .height(coverHeight + 22.dp)
+                            .height(coverHeight + 26.dp)
+                            .background(BackPanel)
                             .padding(horizontal = INNER_PAD),
                         contentAlignment = Alignment.BottomStart,
                     ) {
-                        if (row.isEmpty() && i == rows.size) {
-                            // First empty shelf carries the one hint the page needs.
-                            Text(
-                                text = "Room for more.\nIn Library, long-press a book and choose “Put on my shelf”.",
-                                style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 12.sp, lineHeight = 17.sp, color = Color(0xFF777777)),
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.align(Alignment.Center).clickable(onClick = onGoToLibrary).padding(12.dp),
-                            )
+                        if (row.isEmpty()) {
+                            EmptyShelfDressing(showHint = i == rows.size, onGoToLibrary = onGoToLibrary)
                         }
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.Bottom,
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
-                            row.forEach { book ->
-                                Box(
-                                    Modifier.combinedClickable(
-                                        onClick = { onBookClick(book) },
-                                        onLongClick = { onBookLongClick(book) },
-                                    ),
-                                ) {
-                                    BookCover(book = book, width = coverWidth, height = coverHeight)
-                                }
-                            }
+                            row.forEach { book -> StandingBook(book, coverWidth, coverHeight, onBookClick, onBookLongClick) }
                         }
                     }
                     Plank()
@@ -158,8 +145,60 @@ private fun Bookcase(
             }
             SideBoard()
         }
-        // Plinth
-        Board(height = 10.dp)
+        Plinth()
+    }
+}
+
+/**
+ * A book standing on the plank. Real shelves never hold identical heights,
+ * so each book is between 88% and 100% tall, decided by its title, and it
+ * throws a small shadow onto the back panel.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun StandingBook(
+    book: Book,
+    coverWidth: Dp,
+    coverHeight: Dp,
+    onBookClick: (Book) -> Unit,
+    onBookLongClick: (Book) -> Unit,
+) {
+    val factor = 0.88f + (kotlin.math.abs(book.displayTitle.hashCode()) % 13) / 100f
+    val h = coverHeight * factor
+    val w = coverWidth * (0.94f + (kotlin.math.abs(book.id.hashCode()) % 7) / 100f)
+    Box(
+        Modifier.combinedClickable(
+            onClick = { onBookClick(book) },
+            onLongClick = { onBookLongClick(book) },
+        ),
+    ) {
+        Box(Modifier.padding(start = 3.dp, top = 3.dp).width(w).height(h).background(Color(0xFFB8B8B8)))
+        BookCover(book = book, width = w, height = h)
+    }
+}
+
+/** Something on the empty shelf so it reads as furniture: a small ornament, and one hint. */
+@Composable
+private fun EmptyShelfDressing(showHint: Boolean, onGoToLibrary: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(bottom = 6.dp),
+        verticalArrangement = Arrangement.Bottom,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (showHint) {
+            Text(
+                text = "Room for more.\nIn Library, long-press a book and choose “Put on my shelf”.",
+                style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 12.sp, lineHeight = 17.sp, color = Color(0xFF6E6E6E)),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.clickable(onClick = onGoToLibrary).padding(horizontal = 12.dp, vertical = 10.dp),
+            )
+            Spacer(Modifier.weight(1f))
+        }
+        // A bookend: a small solid block with a highlight edge, standing at the right.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.Bottom) {
+            Box(Modifier.width(22.dp).height(34.dp).background(Color(0xFF1A1A1A)))
+            Box(Modifier.width(1.5.dp).height(34.dp).background(Color(0xFFBDBDBD)))
+        }
     }
 }
 
@@ -173,11 +212,36 @@ private fun Plank() {
     }
 }
 
+/** Crown moulding with a small engraved plate. */
 @Composable
-private fun Board(height: Dp) {
+private fun Crown() {
     Column(Modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().height(height).background(Color(0xFF1A1A1A)))
+        Box(Modifier.fillMaxWidth().padding(horizontal = 6.dp).height(3.dp).background(Color(0xFF1A1A1A)))
+        Box(Modifier.fillMaxWidth().padding(horizontal = 3.dp).height(1.5.dp).background(Color(0xFFBDBDBD)))
+        Box(Modifier.fillMaxWidth().height(22.dp).background(Color(0xFF1A1A1A)), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.border(0.8.dp, Color(0xFFBDBDBD)).padding(horizontal = 10.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    "EX LIBRIS",
+                    style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 9.sp, letterSpacing = 3.sp, color = Color(0xFFE6E6E6)),
+                )
+            }
+        }
         Box(Modifier.fillMaxWidth().height(1.5.dp).background(Color(0xFFBDBDBD)))
+    }
+}
+
+/** The base: a heavier board standing on two feet. */
+@Composable
+private fun Plinth() {
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(11.dp).background(Color(0xFF1A1A1A)))
+        Box(Modifier.fillMaxWidth().height(1.5.dp).background(Color(0xFFBDBDBD)))
+        Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Box(Modifier.width(26.dp).height(7.dp).background(Color(0xFF1A1A1A)))
+            Box(Modifier.width(26.dp).height(7.dp).background(Color(0xFF1A1A1A)))
+        }
     }
 }
 

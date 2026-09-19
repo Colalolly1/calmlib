@@ -39,8 +39,6 @@ fun ShelfGrid(
     books: List<Book>,
     currentlyReading: List<Book>,
     shelfLabel: String,
-    myShelf: List<Book> = emptyList(),
-    showShelfHint: Boolean = false,
     todaysPick: Book? = null,
     newArrivals: List<Book> = emptyList(),
     onBookClick: (Book) -> Unit,
@@ -61,39 +59,8 @@ fun ShelfGrid(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
         ) {
-            if (myShelf.isNotEmpty()) {
-                item {
-                    ShelfHeader("My shelf")
-                    MyShelfRow(
-                        books = myShelf,
-                        coverWidth = coverWidth * 0.6f,
-                        coverHeight = coverHeight * 0.6f,
-                        onBookClick = onBookClick,
-                        onBookLongClick = onBookLongClick,
-                        selectionMode = selectionMode,
-                        selectedIds = selectedIds,
-                    )
-                    currentlyReading.firstOrNull()?.let { latest ->
-                        ResumeLine(latest, onClick = { onBookClick(latest) })
-                    }
-                }
-            } else if (showShelfHint) {
-                item {
-                    ShelfHeader("My shelf")
-                    Text(
-                        text = "Empty for now. Long-press any book and choose “Pin to my shelf” to stand it here.",
-                        style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 13.sp, lineHeight = 18.sp, color = Color(0xFF777777)),
-                        modifier = Modifier.padding(horizontal = SHELF_SIDE_PADDING),
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    ShelfBoard()
-                    Spacer(Modifier.height(14.dp))
-                }
-            }
-
             if (todaysPick != null && todaysPick.id !in readingIds) {
                 item {
-                    if (myShelf.isNotEmpty() || showShelfHint) Spacer(Modifier.height(10.dp))
                     ShelfHeader("From the shelf today")
                     TodaysPickCard(
                         book = todaysPick,
@@ -117,7 +84,7 @@ fun ShelfGrid(
 
             if (otherBooks.isNotEmpty()) {
                 item {
-                    if (myShelf.isNotEmpty() || showShelfHint || todaysPick != null || newArrivals.isNotEmpty()) Spacer(Modifier.height(10.dp))
+                    if (todaysPick != null || newArrivals.isNotEmpty()) Spacer(Modifier.height(10.dp))
                     ShelfHeader(shelfLabel)
                 }
                 items(otherBooks.chunked(BOOKS_PER_SHELF)) { row ->
@@ -148,80 +115,6 @@ private fun SelectionMark(selected: Boolean, modifier: Modifier = Modifier) {
             Text("✓", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 16.sp))
         }
     }
-}
-
-/**
- * The reader's own shelf: a row of smaller covers standing on one plank,
- * scrolling sideways if it fills up. Progress shows as the thin bar on each
- * cover, so a glance tells you where you are in everything.
- */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun MyShelfRow(
-    books: List<Book>,
-    coverWidth: Dp,
-    coverHeight: Dp,
-    onBookClick: (Book) -> Unit,
-    onBookLongClick: (Book) -> Unit,
-    selectionMode: Boolean,
-    selectedIds: Set<Long>,
-) {
-    Column {
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = SHELF_SIDE_PADDING),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            items(books, key = { it.id }) { book ->
-                ShelfBook(book, coverWidth, coverHeight, onBookClick, onBookLongClick, selectionMode, book.id in selectedIds)
-            }
-        }
-        ShelfBoard()
-    }
-}
-
-/** One line under the shelf: the book you were last in, and the word that takes you back. */
-@Composable
-private fun ResumeLine(book: Book, onClick: () -> Unit) {
-    val pct = (book.progress * 100).toInt().coerceIn(0, 100)
-    val where = when {
-        book.totalPages > 1 && book.currentPage > 0 -> "Page ${book.currentPage} of ${book.totalPages}"
-        pct > 0 -> "$pct% read"
-        else -> "Just started"
-    }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = SHELF_SIDE_PADDING, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = book.displayTitle,
-                style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 16.sp, color = Color.Black),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = listOfNotNull(where, lastOpened(book.lastRead)).joinToString("  ·  "),
-                style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF777777)),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(14.dp))
-        Box(
-            Modifier
-                .background(Color.Black)
-                .padding(horizontal = 20.dp, vertical = 9.dp),
-        ) {
-            Text("Resume", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 13.sp))
-        }
-    }
-    Spacer(Modifier.height(6.dp))
 }
 
 /**

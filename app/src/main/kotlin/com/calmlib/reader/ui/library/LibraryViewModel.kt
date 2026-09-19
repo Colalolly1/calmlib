@@ -91,14 +91,12 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /**
-     * The reader's own little bookshelf at the top of the library: the books
-     * they pinned, in pin order, then anything they're currently reading that
-     * isn't pinned yet.
+     * The bookcase on the home page: exactly the books the reader has put
+     * there, in the order they were added. Nothing joins it on its own.
      */
-    val myShelf: StateFlow<List<Book>> = combine(allBooks, pinnedIds, currentlyReading) { all, pins, reading ->
+    val myShelf: StateFlow<List<Book>> = combine(allBooks, pinnedIds) { all, pins ->
         val byId = all.associateBy { it.id }
-        val pinned = pins.mapNotNull { byId[it] }
-        pinned + reading.filter { it.id !in pins }
+        pins.mapNotNull { byId[it] }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     fun togglePin(book: Book) {

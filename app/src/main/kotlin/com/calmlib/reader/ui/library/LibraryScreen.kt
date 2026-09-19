@@ -156,17 +156,21 @@ fun LibraryScreen(
                 .padding(start = PAGE_PADDING, end = PAGE_PADDING - 6.dp, top = 16.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            Text(
-                text = when {
-                    home -> "My shelf"
-                    selectedCollection != null -> selectedCollection.name
-                    else -> "Library"
-                },
-                style = CalmTypography.libraryTitle.copy(fontSize = 30.sp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
+            // The two pages are the title: tap the grey one to go there.
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
+                if (selectedCollection != null && !home) {
+                    Text(
+                        text = selectedCollection.name,
+                        style = CalmTypography.libraryTitle.copy(fontSize = 26.sp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                } else {
+                    PageTitle("My shelf", home) { home = true; showMore = false; showSort = false }
+                    Spacer(Modifier.width(16.dp))
+                    PageTitle("Library", !home) { home = false; showMore = false }
+                }
+            }
             if (!selectionMode) {
                 HeaderWord(if (showSearch) "Done" else "Search") {
                     if (home) home = false
@@ -204,7 +208,7 @@ fun LibraryScreen(
             ) {
                 Text(
                     text = if (selectedCollection != null)
-                        "${displayedBooks.size} book${plural(displayedBooks.size)} on this shelf"
+                        "${displayedBooks.size} book${plural(displayedBooks.size)} in this collection"
                     else "“${epigraph.first}”  — ${epigraph.second}",
                     style = TextStyle(
                         fontFamily = CalmFonts.serif,
@@ -372,8 +376,6 @@ fun LibraryScreen(
                         books = displayedBooks,
                         currentlyReading = if (showCurrentlyReading) currentlyReading else emptyList(),
                         shelfLabel = shelfLabel,
-                        myShelf = if (showCurrentlyReading && activeFormat == null) myShelf else emptyList(),
-                        showShelfHint = showCurrentlyReading && activeFormat == null && myShelf.isEmpty(),
                         todaysPick = if (showCurrentlyReading && activeFormat == null && !selectionMode) todaysPick else null,
                         newArrivals = if (showCurrentlyReading && activeFormat == null && sortField != SortField.DATE_ADDED) newArrivals else emptyList(),
                         onBookClick = { book ->
@@ -393,17 +395,6 @@ fun LibraryScreen(
             } }
         }
 
-        // ── Bottom tabs ──────────────────────────────────────────────────
-        if (!selectionMode) {
-            HairlineRule()
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = PAGE_PADDING).navigationBarsPadding(),
-                horizontalArrangement = Arrangement.spacedBy(22.dp),
-            ) {
-                BottomTab("My shelf", home) { home = true; showMore = false; showSort = false }
-                BottomTab("Library", !home) { home = false; showMore = false }
-            }
-        }
     }
 
     longPressBook?.let { b ->
@@ -446,13 +437,14 @@ private fun HeaderWord(text: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun BottomTab(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun PageTitle(label: String, selected: Boolean, onClick: () -> Unit) {
     Column(Modifier.width(IntrinsicSize.Max).clickable(onClick = onClick)) {
         Text(
             text = label,
-            style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 15.sp, color = if (selected) Ink else Grey),
-            modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
+            style = CalmTypography.libraryTitle.copy(fontSize = 26.sp, color = if (selected) Ink else Color(0xFF777777)),
+            maxLines = 1,
         )
+        Spacer(Modifier.height(3.dp))
         Box(Modifier.fillMaxWidth().height(2.dp).background(if (selected) Ink else Color.Transparent))
     }
 }
@@ -594,7 +586,7 @@ private fun MorePanel(
         MoreRow("Select books to remove…", onSelect)
         MoreRow("Find a phrase inside all books", onFindInside)
         Spacer(Modifier.height(10.dp))
-        Text("SHELVES", style = CalmTypography.sectionHeader.copy(color = Grey))
+        Text("COLLECTIONS", style = CalmTypography.sectionHeader.copy(color = Grey))
         Spacer(Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             OptionChip("All", selectedCollectionId == null) { onCollection(null) }
@@ -612,7 +604,7 @@ private fun MorePanel(
                     modifier = Modifier.weight(1f),
                     decorationBox = { inner ->
                         Box {
-                            if (newCollectionName.isEmpty()) Text("Shelf name", style = CalmTypography.controlValue)
+                            if (newCollectionName.isEmpty()) Text("Collection name", style = CalmTypography.controlValue)
                             inner()
                         }
                     },
@@ -752,7 +744,7 @@ private fun BookActionSheet(
                 }
                 pickingCollection -> {
                     if (collections.isEmpty()) {
-                        Text("No shelves yet. Make one under More.", style = CalmTypography.emptyBody, modifier = Modifier.padding(vertical = 14.dp))
+                        Text("No collections yet. Make one under More.", style = CalmTypography.emptyBody, modifier = Modifier.padding(vertical = 14.dp))
                     } else {
                         collections.forEach { c ->
                             SheetRow(c.name) { onAddToCollection(c) }
@@ -770,7 +762,7 @@ private fun BookActionSheet(
                         if (!book.isCurrentlyReading || book.progress < 1f) "Mark as finished" to onMarkFinished else null,
                         if (book.isCurrentlyReading) "Take off Reading now" to onRemoveFromReading else null,
                         if (book.format == BookFormat.PDF) "Convert to EPUB (reflowable)" to onConvertToEpub else null,
-                        "Put on a shelf…" to { pickingCollection = true },
+                        "Add to a collection…" to { pickingCollection = true },
                         "Select more books…" to onSelectMultiple,
                         "Remove from library…" to { confirmingDelete = true },
                     )
