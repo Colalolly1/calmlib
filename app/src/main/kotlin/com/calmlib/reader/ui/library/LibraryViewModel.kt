@@ -45,11 +45,18 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val books: StateFlow<List<Book>> = combine(sortField, formatFilters) { s, f -> s to f }
         .flatMapLatest { (s, f) ->
             bookRepo.books(s).map { list ->
-                if (f.isEmpty()) list
-                else list.filter { it.format.name in f }
+                val shown = if (f.isEmpty()) list else list.filter { it.format.name in f }
+                // Sort by the tidied title so "328186006-Secret-of-…" files the
+                // way a librarian would, not by the store number.
+                if (s == SortField.TITLE) shown.sortedBy { it.displayTitle.lowercase() } else shown
             }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** How many books of each format the whole library holds, ignoring the filter. */
+    val formatCounts: StateFlow<Map<String, Int>> = bookRepo.books(SortField.TITLE)
+        .map { list -> list.groupingBy { it.format.name }.eachCount() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     val currentlyReading: StateFlow<List<Book>> = bookRepo.currentlyReading()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -184,6 +191,13 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _isScanning.value = false
             }
+        }
+    }
+
+    /** Show one format only (Kindle-style tabs); null shows everything. */
+    fun setFormatFilter(format: String?) {
+        viewModelScope.launch {
+            settingsRepo.setFormatFilters(if (format == null) emptySet() else setOf(format))
         }
     }
 

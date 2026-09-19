@@ -13,22 +13,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.calmlib.reader.data.model.Book
+import com.calmlib.reader.ui.theme.CalmFonts
 import com.calmlib.reader.ui.theme.CalmTypography
 
-// One physical shelf holds N books on the Mudita's 480px-wide screen. Bumping
-// this changes the cover size automatically since the row Arrangement.SpaceEvenly
-// distributes whatever's there.
-private const val BOOKS_PER_SHELF = 3
+// Two books to a shelf: covers big enough to actually read, the way they'd sit
+// on a real shelf at arm's length. Cover width is derived from the screen so it
+// fills whatever device this runs on.
+private const val BOOKS_PER_SHELF = 2
+private val SHELF_SIDE_PADDING = 22.dp
+private val COVER_GAP = 26.dp
+private val MAX_COVER_WIDTH = 180.dp
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ShelfGrid(
     books: List<Book>,
     currentlyReading: List<Book>,
+    shelfLabel: String,
     onBookClick: (Book) -> Unit,
     onBookLongClick: (Book) -> Unit = {},
     selectionMode: Boolean = false,
@@ -38,49 +47,52 @@ fun ShelfGrid(
     val readingIds = currentlyReading.map { it.id }.toSet()
     val otherBooks = books.filter { it.id !in readingIds }
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
-    ) {
-        if (currentlyReading.isNotEmpty()) {
-            // The most recently read book gets a hero card: big cover, progress,
-            // one-tap resume. Open the app → one tap → back in your book.
-            item { ShelfHeader("Continue reading") }
-            item {
-                ContinueReadingHero(
-                    book = currentlyReading.first(),
-                    onClick = { onBookClick(currentlyReading.first()) },
-                    onLongClick = { onBookLongClick(currentlyReading.first()) },
-                    selectionMode = selectionMode,
-                    selected = currentlyReading.first().id in selectedIds,
-                )
-            }
-            val restReading = currentlyReading.drop(1)
-            if (restReading.isNotEmpty()) {
-                item { ShelfHeader("Also reading") }
-                items(restReading.chunked(BOOKS_PER_SHELF)) { row ->
-                    Shelf(row, onBookClick, onBookLongClick, selectionMode, selectedIds)
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val coverWidth = ((maxWidth - SHELF_SIDE_PADDING * 2 - COVER_GAP) / BOOKS_PER_SHELF)
+            .coerceAtMost(MAX_COVER_WIDTH)
+        val coverHeight = coverWidth * 1.5f
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
+        ) {
+            if (currentlyReading.isNotEmpty()) {
+                item { ShelfHeader("Reading now") }
+                item {
+                    ReadingNowHero(
+                        book = currentlyReading.first(),
+                        coverWidth = coverWidth,
+                        coverHeight = coverHeight,
+                        onClick = { onBookClick(currentlyReading.first()) },
+                        onLongClick = { onBookLongClick(currentlyReading.first()) },
+                        selectionMode = selectionMode,
+                        selected = currentlyReading.first().id in selectedIds,
+                    )
+                }
+                val restReading = currentlyReading.drop(1)
+                if (restReading.isNotEmpty()) {
+                    item { ShelfHeader("Also reading") }
+                    items(restReading.chunked(BOOKS_PER_SHELF)) { row ->
+                        Shelf(row, coverWidth, coverHeight, onBookClick, onBookLongClick, selectionMode, selectedIds)
+                    }
                 }
             }
-        }
 
-        if (otherBooks.isNotEmpty()) {
+            if (otherBooks.isNotEmpty()) {
+                item {
+                    if (currentlyReading.isNotEmpty()) Spacer(Modifier.height(14.dp))
+                    ShelfHeader(shelfLabel)
+                }
+                items(otherBooks.chunked(BOOKS_PER_SHELF)) { row ->
+                    Shelf(row, coverWidth, coverHeight, onBookClick, onBookLongClick, selectionMode, selectedIds)
+                }
+            }
+
             item {
-                Spacer(Modifier.height(20.dp))
-                ShelfHeader("On your shelves")
+                Spacer(Modifier.height(28.dp))
+                QuoteFooter()
+                Spacer(Modifier.height(36.dp))
             }
-            items(otherBooks.chunked(BOOKS_PER_SHELF)) { row ->
-                Shelf(row, onBookClick, onBookLongClick, selectionMode, selectedIds)
-            }
-        }
-
-        // Closing flourish — ornament + literary quote of the day. Same quote shows
-        // across both the empty welcome screen and the populated library, so the
-        // app feels like a single curated space.
-        item {
-            Spacer(Modifier.height(36.dp))
-            QuoteFooter()
-            Spacer(Modifier.height(36.dp))
         }
     }
 }
@@ -90,26 +102,27 @@ fun ShelfGrid(
 private fun SelectionMark(selected: Boolean, modifier: Modifier = Modifier) {
     Box(
         modifier
-            .size(24.dp)
+            .size(26.dp)
             .background(if (selected) Color.Black else Color.White)
             .border(1.5.dp, Color.Black),
         contentAlignment = Alignment.Center,
     ) {
         if (selected) {
-            Text("✓", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 15.sp))
+            Text("✓", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 16.sp))
         }
     }
 }
 
 /**
- * Hero card for the book you're in the middle of. Large cover on the left;
- * title, author, progress and a filled Resume button on the right. Sits on its
- * own shelf line like everything else.
+ * The book you're in the middle of: cover on the left, title, author, progress
+ * and a filled Resume button on the right, standing on its own shelf.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ContinueReadingHero(
+private fun ReadingNowHero(
     book: Book,
+    coverWidth: Dp,
+    coverHeight: Dp,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     selectionMode: Boolean = false,
@@ -120,103 +133,104 @@ private fun ContinueReadingHero(
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                .padding(horizontal = 24.dp),
+                .padding(horizontal = SHELF_SIDE_PADDING),
             verticalAlignment = Alignment.Bottom,
         ) {
             Box {
-                BookCover(
-                    book = book,
-                    width = 124.dp,
-                    height = 186.dp,
-                    showShelfLine = false,
-                )
+                BookCover(book = book, width = coverWidth, height = coverHeight)
                 if (selectionMode) {
-                    SelectionMark(
-                        selected = selected,
-                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
-                    )
+                    SelectionMark(selected, Modifier.align(Alignment.TopEnd).padding(6.dp))
                 }
             }
-            Spacer(Modifier.width(18.dp))
-            Column(Modifier.weight(1f).padding(bottom = 6.dp)) {
+            Spacer(Modifier.width(20.dp))
+            Column(Modifier.weight(1f).padding(bottom = 10.dp)) {
                 Text(
-                    text = book.title,
-                    style = androidx.compose.ui.text.TextStyle(
-                        fontFamily = com.calmlib.reader.ui.theme.CalmFonts.serif,
-                        fontSize = 17.sp,
+                    text = book.displayTitle,
+                    style = TextStyle(
+                        fontFamily = CalmFonts.serif,
+                        fontSize = 19.sp,
+                        lineHeight = 24.sp,
                         color = Color.Black,
                     ),
-                    maxLines = 3,
+                    maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (book.author.isNotEmpty()) {
-                    Spacer(Modifier.height(2.dp))
+                    Spacer(Modifier.height(4.dp))
                     Text(
                         text = book.author,
-                        style = CalmTypography.metadata.copy(fontSize = 12.sp),
-                        maxLines = 1,
+                        style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 13.sp, color = Color(0xFF555555)),
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(14.dp))
                 val pct = (book.progress * 100).toInt().coerceIn(0, 100)
+                Box(Modifier.fillMaxWidth().height(2.dp).background(Color(0xFFDDDDDD))) {
+                    Box(Modifier.fillMaxHeight().fillMaxWidth(book.progress.coerceIn(0f, 1f)).background(Color.Black))
+                }
+                Spacer(Modifier.height(6.dp))
                 Text(
                     text = if (pct > 0) "$pct% read" else "Just started",
-                    style = CalmTypography.metadata.copy(fontSize = 11.sp),
+                    style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF777777)),
                 )
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(14.dp))
                 Box(
                     Modifier
                         .background(Color.Black)
                         .clickable(onClick = onClick)
-                        .padding(horizontal = 22.dp, vertical = 10.dp),
+                        .padding(horizontal = 26.dp, vertical = 11.dp),
                 ) {
                     Text(
                         "Resume",
-                        style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 13.sp),
+                        style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 14.sp),
                     )
                 }
             }
         }
-        // The hero sits on the same continuous shelf line as everything else.
-        Spacer(Modifier.height(1.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .height(2.dp)
-                .background(Color(0xFF2A2A2A))
-        )
-        Spacer(Modifier.height(24.dp))
+        ShelfBoard()
+        Spacer(Modifier.height(22.dp))
     }
 }
 
 /**
- * Section header — italic serif label between two hairlines, like a chapter
- * heading in a printed book. Feels far more "library" than the old ALL-CAPS
- * mini-heading.
+ * Section header — italic serif label between two hairlines, like a running
+ * head in a printed book.
  */
 @Composable
 private fun ShelfHeader(label: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 14.dp),
+            .padding(horizontal = SHELF_SIDE_PADDING, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.width(24.dp).height(0.5.dp).background(Color(0xFF888888)))
         Spacer(Modifier.width(12.dp))
         Text(
             text = label,
-            style = androidx.compose.ui.text.TextStyle(
-                fontFamily = com.calmlib.reader.ui.theme.CalmFonts.serif,
-                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                fontSize = 14.sp,
-                color = androidx.compose.ui.graphics.Color(0xFF333333),
+            style = TextStyle(
+                fontFamily = CalmFonts.serif,
+                fontStyle = FontStyle.Italic,
+                fontSize = 15.sp,
+                color = Color(0xFF333333),
             ),
         )
         Spacer(Modifier.width(12.dp))
         Box(Modifier.weight(1f).height(0.5.dp).background(Color(0xFF888888)))
+    }
+}
+
+/**
+ * The shelf itself: a dark top edge, a pale front face and a thin underside
+ * shadow. Runs the full width so every shelf reads as one plank of wood.
+ */
+@Composable
+private fun ShelfBoard() {
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(2.5.dp).background(Color(0xFF1A1A1A)))
+        Box(Modifier.fillMaxWidth().height(7.dp).background(Color(0xFFE4E4E4)))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF9C9C9C)))
     }
 }
 
@@ -235,48 +249,40 @@ private fun QuoteFooter() {
             Box(Modifier.weight(1f).height(0.5.dp).background(Color(0xFF888888)))
             Text(
                 text = " ❧ ",
-                style = androidx.compose.ui.text.TextStyle(
-                    fontFamily = com.calmlib.reader.ui.theme.CalmFonts.serif,
-                    fontSize = 14.sp,
-                    color = androidx.compose.ui.graphics.Color(0xFF555555),
-                ),
+                style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 14.sp, color = Color(0xFF555555)),
             )
             Box(Modifier.weight(1f).height(0.5.dp).background(Color(0xFF888888)))
         }
         Spacer(Modifier.height(16.dp))
         Text(
             text = "“$quote”",
-            style = androidx.compose.ui.text.TextStyle(
-                fontFamily = com.calmlib.reader.ui.theme.CalmFonts.serif,
-                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+            style = TextStyle(
+                fontFamily = CalmFonts.serif,
+                fontStyle = FontStyle.Italic,
                 fontSize = 13.sp,
                 lineHeight = 20.sp,
-                color = androidx.compose.ui.graphics.Color(0xFF666666),
+                color = Color(0xFF666666),
             ),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(6.dp))
         Text(
             text = "— $attribution",
-            style = androidx.compose.ui.text.TextStyle(
-                fontFamily = com.calmlib.reader.ui.theme.CalmFonts.sans,
-                fontSize = 11.sp,
-                color = androidx.compose.ui.graphics.Color(0xFF888888),
-            ),
+            style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF888888)),
         )
     }
 }
 
 /**
- * One physical shelf: a row of book covers bottom-aligned (so they all stand on
- * the same baseline) followed by a continuous dark line that runs the full width
- * of the screen — the shelf itself. Title/author appears below each cover so it
- * reads like a museum display.
+ * One shelf: covers standing bottom-aligned on the plank, labels underneath
+ * like the little cards in a bookshop window.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Shelf(
     books: List<Book>,
+    coverWidth: Dp,
+    coverHeight: Dp,
     onBookClick: (Book) -> Unit,
     onBookLongClick: (Book) -> Unit,
     selectionMode: Boolean = false,
@@ -286,45 +292,27 @@ private fun Shelf(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                .padding(horizontal = SHELF_SIDE_PADDING),
             verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             books.forEach { book ->
-                ShelfBook(book, onBookClick, onBookLongClick, selectionMode, book.id in selectedIds)
+                ShelfBook(book, coverWidth, coverHeight, onBookClick, onBookLongClick, selectionMode, book.id in selectedIds)
             }
-            // Pad the row so books always align left-to-right with the same spacing,
-            // even when the final shelf is partial (1 or 2 books).
-            repeat(BOOKS_PER_SHELF - books.size) {
-                Spacer(Modifier.width(100.dp))
-            }
+            repeat(BOOKS_PER_SHELF - books.size) { Spacer(Modifier.width(coverWidth)) }
         }
-        // The shelf line — continuous, spans full screen width, sits flush under the
-        // book covers. 2dp dark grey reads as a wood/metal shelf edge on E-Ink.
-        Spacer(Modifier.height(1.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp)
-                .height(2.dp)
-                .background(Color(0xFF2A2A2A))
-        )
-        Spacer(Modifier.height(6.dp))
-        // Title/author label area BELOW the shelf, like a bookstore display tag.
+        ShelfBoard()
+        Spacer(Modifier.height(8.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+                .padding(horizontal = SHELF_SIDE_PADDING),
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            books.forEach { book ->
-                BookLabel(book)
-            }
-            repeat(BOOKS_PER_SHELF - books.size) {
-                Spacer(Modifier.width(100.dp))
-            }
+            books.forEach { book -> BookLabel(book, coverWidth) }
+            repeat(BOOKS_PER_SHELF - books.size) { Spacer(Modifier.width(coverWidth)) }
         }
-        Spacer(Modifier.height(28.dp))   // air between shelves
+        Spacer(Modifier.height(30.dp))
     }
 }
 
@@ -332,53 +320,52 @@ private fun Shelf(
 @Composable
 private fun ShelfBook(
     book: Book,
+    coverWidth: Dp,
+    coverHeight: Dp,
     onClick: (Book) -> Unit,
     onLongClick: (Book) -> Unit,
     selectionMode: Boolean = false,
     selected: Boolean = false,
 ) {
     Box(
-        modifier = Modifier
-            .combinedClickable(
-                onClick = { onClick(book) },
-                onLongClick = { onLongClick(book) },
-            )
+        modifier = Modifier.combinedClickable(
+            onClick = { onClick(book) },
+            onLongClick = { onLongClick(book) },
+        ),
     ) {
-        BookCover(
-            book = book,
-            width = 100.dp,
-            height = 150.dp,
-            showShelfLine = false,
-        )
+        BookCover(book = book, width = coverWidth, height = coverHeight)
         if (selectionMode) {
-            SelectionMark(
-                selected = selected,
-                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
-            )
+            SelectionMark(selected, Modifier.align(Alignment.TopEnd).padding(6.dp))
         }
     }
 }
 
 @Composable
-private fun BookLabel(book: Book) {
+private fun BookLabel(book: Book, width: Dp) {
     Column(
-        modifier = Modifier.width(100.dp),
+        modifier = Modifier.width(width),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            text = book.title,
-            style = CalmTypography.bookTitle.copy(fontSize = 11.sp),
+            text = book.displayTitle,
+            style = TextStyle(
+                fontFamily = CalmFonts.serif,
+                fontSize = 13.sp,
+                lineHeight = 17.sp,
+                color = Color.Black,
+            ),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            textAlign = TextAlign.Center,
         )
         if (book.author.isNotEmpty()) {
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = book.author,
-                style = CalmTypography.metadata.copy(fontSize = 9.sp),
+                style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF6A6A6A)),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                textAlign = TextAlign.Center,
             )
         }
     }
