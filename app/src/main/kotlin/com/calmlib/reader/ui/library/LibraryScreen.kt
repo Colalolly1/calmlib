@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -90,6 +91,8 @@ fun LibraryScreen(
         confirmingBulkDelete = false
     }
 
+    // Two pages: the bookcase you curate (home) and the whole library.
+    var home by rememberSaveable { mutableStateOf(true) }
     var showSearch by remember { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
     var showMore by remember { mutableStateOf(false) }
@@ -154,7 +157,11 @@ fun LibraryScreen(
             verticalAlignment = Alignment.Bottom,
         ) {
             Text(
-                text = selectedCollection?.name ?: "Library",
+                text = when {
+                    home -> "My shelf"
+                    selectedCollection != null -> selectedCollection.name
+                    else -> "Library"
+                },
                 style = CalmTypography.libraryTitle.copy(fontSize = 30.sp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -162,6 +169,7 @@ fun LibraryScreen(
             )
             if (!selectionMode) {
                 HeaderWord(if (showSearch) "Done" else "Search") {
+                    if (home) home = false
                     showSearch = !showSearch
                     if (!showSearch) viewModel.setSearch("")
                     showMore = false
@@ -174,201 +182,226 @@ fun LibraryScreen(
             }
         }
 
-        // ── Epigraph ───────────────────────────────────────────────────────
-        // A line of the day under the title, like the quotation facing a
-        // book's first page. Counts live in the tabs below, where they belong.
-        val epigraph = remember { quoteForToday() }
-        Row(
-            Modifier.padding(horizontal = PAGE_PADDING).padding(top = 4.dp),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Text(
-                text = if (selectedCollection != null)
-                    "${displayedBooks.size} book${plural(displayedBooks.size)} on this shelf"
-                else "“${epigraph.first}”  — ${epigraph.second}",
-                style = TextStyle(
-                    fontFamily = CalmFonts.serif,
-                    fontStyle = FontStyle.Italic,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    color = Grey,
-                ),
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
+        if (home) {
+            val epigraph = remember { quoteForToday() }
+            BookcaseScreen(
+                books = myShelf,
+                readingNow = currentlyReading.firstOrNull(),
+                epigraph = epigraph,
+                onBookClick = onBookClick,
+                onBookLongClick = { longPressBook = it },
+                onGoToLibrary = { home = false },
                 modifier = Modifier.weight(1f),
             )
-            if (selectedCollection != null) {
-                Text(
-                    "← All books",
-                    style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 12.sp, color = Ink),
-                    modifier = Modifier.clickable { viewModel.selectCollection(null) }.padding(start = 12.dp, top = 2.dp),
-                )
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-
-        // ── Tabs / selection bar ───────────────────────────────────────────
-        if (selectionMode) {
-            SelectionBar(
-                count = selectedIds.size,
-                confirming = confirmingBulkDelete,
-                onRemove = { confirmingBulkDelete = true },
-                onKeep = { confirmingBulkDelete = false },
-                onConfirm = {
-                    val all = (currentlyReading + books).distinctBy { it.id }
-                    viewModel.deleteBooks(all.filter { it.id in selectedIds })
-                    exitSelection()
-                },
-                onCancel = { exitSelection() },
-            )
-        } else if (selectedCollection == null) {
+        } else {
+            // ── Epigraph ───────────────────────────────────────────────────────
+            // A line of the day under the title, like the quotation facing a
+            // book's first page. Counts live in the tabs below, where they belong.
+            val epigraph = remember { quoteForToday() }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = PAGE_PADDING),
-                verticalAlignment = Alignment.Bottom,
+                Modifier.padding(horizontal = PAGE_PADDING).padding(top = 4.dp),
+                verticalAlignment = Alignment.Top,
             ) {
-                FormatTab("All", totalBooks, activeFormat == null && formatFilters.isEmpty()) { viewModel.setFormatFilter(null) }
-                formatTabs.forEach { f ->
-                    Spacer(Modifier.width(20.dp))
-                    FormatTab(f, formatCounts[f] ?: 0, activeFormat == f) { viewModel.setFormatFilter(f) }
-                }
-                Spacer(Modifier.weight(1f))
                 Text(
-                    text = if (showSort) "Sort ▴" else "${sortField.label()} ▾",
-                    style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 13.sp, color = Grey),
-                    modifier = Modifier
-                        .clickable { showSort = !showSort; showMore = false }
-                        .padding(bottom = 8.dp, start = 8.dp),
+                    text = if (selectedCollection != null)
+                        "${displayedBooks.size} book${plural(displayedBooks.size)} on this shelf"
+                    else "“${epigraph.first}”  — ${epigraph.second}",
+                    style = TextStyle(
+                        fontFamily = CalmFonts.serif,
+                        fontStyle = FontStyle.Italic,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        color = Grey,
+                    ),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
+                if (selectedCollection != null) {
+                    Text(
+                        "← All books",
+                        style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 12.sp, color = Ink),
+                        modifier = Modifier.clickable { viewModel.selectCollection(null) }.padding(start = 12.dp, top = 2.dp),
+                    )
+                }
             }
-            HairlineRule()
-            if (showSort) {
+            Spacer(Modifier.height(14.dp))
+
+            // ── Tabs / selection bar ───────────────────────────────────────────
+            if (selectionMode) {
+                SelectionBar(
+                    count = selectedIds.size,
+                    confirming = confirmingBulkDelete,
+                    onRemove = { confirmingBulkDelete = true },
+                    onKeep = { confirmingBulkDelete = false },
+                    onConfirm = {
+                        val all = (currentlyReading + books).distinctBy { it.id }
+                        viewModel.deleteBooks(all.filter { it.id in selectedIds })
+                        exitSelection()
+                    },
+                    onCancel = { exitSelection() },
+                )
+            } else if (selectedCollection == null) {
                 Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(Paper)
-                        .padding(horizontal = PAGE_PADDING, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = PAGE_PADDING),
+                    verticalAlignment = Alignment.Bottom,
                 ) {
-                    SortField.entries.forEach { f ->
-                        OptionChip(f.label(), sortField == f) {
-                            viewModel.setSortField(f)
-                            showSort = false
-                        }
+                    FormatTab("All", totalBooks, activeFormat == null && formatFilters.isEmpty()) { viewModel.setFormatFilter(null) }
+                    formatTabs.forEach { f ->
+                        Spacer(Modifier.width(20.dp))
+                        FormatTab(f, formatCounts[f] ?: 0, activeFormat == f) { viewModel.setFormatFilter(f) }
                     }
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = if (showSort) "Sort ▴" else "${sortField.label()} ▾",
+                        style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 13.sp, color = Grey),
+                        modifier = Modifier
+                            .clickable { showSort = !showSort; showMore = false }
+                            .padding(bottom = 8.dp, start = 8.dp),
+                    )
                 }
                 HairlineRule()
-            }
-        } else {
-            HairlineRule()
-        }
-
-        // ── More panel ─────────────────────────────────────────────────────
-        if (showMore && !selectionMode) {
-            MorePanel(
-                collections = collections,
-                selectedCollectionId = selectedCollectionId,
-                showNewCollection = showNewCollection,
-                newCollectionName = newCollectionName,
-                onNewCollectionName = { newCollectionName = it },
-                onAdd = { filePicker.launch(BOOK_MIME_TYPES); showMore = false },
-                onScan = { onRequestScan(); showMore = false },
-                onSelect = { selectionMode = true; showMore = false },
-                onCollection = { id -> viewModel.selectCollection(id); showMore = false },
-                onStartNewCollection = { showNewCollection = true },
-                onSaveCollection = {
-                    if (newCollectionName.isNotBlank()) {
-                        viewModel.createCollection(newCollectionName.trim())
-                        newCollectionName = ""
-                        showNewCollection = false
-                    }
-                },
-                onFindInside = { showCrossSearch = true; showMore = false },
-                onSettings = { showSettings = true; showMore = false },
-            )
-        }
-
-        // ── Search field ───────────────────────────────────────────────────
-        if (showSearch) {
-            Box(Modifier.fillMaxWidth().padding(horizontal = PAGE_PADDING, vertical = 10.dp)) {
-                BasicTextField(
-                    value = searchQuery,
-                    onValueChange = { viewModel.setSearch(it) },
-                    textStyle = TextStyle(fontFamily = CalmFonts.serif, fontSize = 17.sp, color = Ink),
-                    cursorBrush = SolidColor(Ink),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
-                    decorationBox = { inner ->
-                        Box {
-                            if (searchQuery.isEmpty()) {
-                                Text(
-                                    "Title or author…",
-                                    style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 17.sp, color = LightGrey),
-                                )
+                if (showSort) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(Paper)
+                            .padding(horizontal = PAGE_PADDING, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        SortField.entries.forEach { f ->
+                            OptionChip(f.label(), sortField == f) {
+                                viewModel.setSortField(f)
+                                showSort = false
                             }
-                            inner()
+                        }
+                    }
+                    HairlineRule()
+                }
+            } else {
+                HairlineRule()
+            }
+
+            // ── More panel ─────────────────────────────────────────────────────
+            if (showMore && !selectionMode) {
+                MorePanel(
+                    collections = collections,
+                    selectedCollectionId = selectedCollectionId,
+                    showNewCollection = showNewCollection,
+                    newCollectionName = newCollectionName,
+                    onNewCollectionName = { newCollectionName = it },
+                    onAdd = { filePicker.launch(BOOK_MIME_TYPES); showMore = false },
+                    onScan = { onRequestScan(); showMore = false },
+                    onSelect = { selectionMode = true; showMore = false },
+                    onCollection = { id -> viewModel.selectCollection(id); showMore = false },
+                    onStartNewCollection = { showNewCollection = true },
+                    onSaveCollection = {
+                        if (newCollectionName.isNotBlank()) {
+                            viewModel.createCollection(newCollectionName.trim())
+                            newCollectionName = ""
+                            showNewCollection = false
                         }
                     },
+                    onFindInside = { showCrossSearch = true; showMore = false },
+                    onSettings = { showSettings = true; showMore = false },
                 )
-                Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(1.dp).background(Ink))
             }
+
+            // ── Search field ───────────────────────────────────────────────────
+            if (showSearch) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = PAGE_PADDING, vertical = 10.dp)) {
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { viewModel.setSearch(it) },
+                        textStyle = TextStyle(fontFamily = CalmFonts.serif, fontSize = 17.sp, color = Ink),
+                        cursorBrush = SolidColor(Ink),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                        decorationBox = { inner ->
+                            Box {
+                                if (searchQuery.isEmpty()) {
+                                    Text(
+                                        "Title or author…",
+                                        style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 17.sp, color = LightGrey),
+                                    )
+                                }
+                                inner()
+                            }
+                        },
+                    )
+                    Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(1.dp).background(Ink))
+                }
+            }
+
+            // ── Quiet status line ──────────────────────────────────────────────
+            conversionStatus?.let { StatusLine(it, dismissable = !isConverting) { viewModel.clearConversionStatus() } }
+            scanStatus?.let { StatusLine(it, dismissable = !isScanning) { viewModel.clearScanStatus() } }
+
+            // ── Shelves ────────────────────────────────────────────────────────
+            val libraryIsTrulyEmpty = totalBooks == 0 && currentlyReading.isEmpty()
+            Box(Modifier.weight(1f)) { when {
+                libraryIsTrulyEmpty && !isSearching -> {
+                    EmptyLibrary(
+                        onAddBook = { filePicker.launch(BOOK_MIME_TYPES) },
+                        onScanDevice = onRequestScan,
+                    )
+                }
+                displayedBooks.isEmpty() && isSearching -> {
+                    Box(Modifier.fillMaxWidth().padding(top = 64.dp), contentAlignment = Alignment.Center) {
+                        Text("No books match “${searchQuery.trim()}”.", style = CalmTypography.emptyBody)
+                    }
+                }
+                displayedBooks.isEmpty() && !isSearching -> {
+                    NoMatchesHere(
+                        formatFilters = formatFilters,
+                        selectedCollection = selectedCollection,
+                        onClearFilters = {
+                            viewModel.clearFormatFilters()
+                            viewModel.selectCollection(null)
+                        },
+                    )
+                }
+                else -> {
+                    val shelfLabel = when {
+                        isSearching -> "Found"
+                        selectedCollection != null -> selectedCollection.name
+                        activeFormat != null -> "$activeFormat books"
+                        else -> "All books"
+                    }
+                    ShelfGrid(
+                        books = displayedBooks,
+                        currentlyReading = if (showCurrentlyReading) currentlyReading else emptyList(),
+                        shelfLabel = shelfLabel,
+                        myShelf = if (showCurrentlyReading && activeFormat == null) myShelf else emptyList(),
+                        showShelfHint = showCurrentlyReading && activeFormat == null && myShelf.isEmpty(),
+                        todaysPick = if (showCurrentlyReading && activeFormat == null && !selectionMode) todaysPick else null,
+                        newArrivals = if (showCurrentlyReading && activeFormat == null && sortField != SortField.DATE_ADDED) newArrivals else emptyList(),
+                        onBookClick = { book ->
+                            if (selectionMode) {
+                                selectedIds = if (book.id in selectedIds) selectedIds - book.id else selectedIds + book.id
+                            } else onBookClick(book)
+                        },
+                        onBookLongClick = { book ->
+                            if (selectionMode) {
+                                selectedIds = if (book.id in selectedIds) selectedIds - book.id else selectedIds + book.id
+                            } else longPressBook = book
+                        },
+                        selectionMode = selectionMode,
+                        selectedIds = selectedIds,
+                    )
+                }
+            } }
         }
 
-        // ── Quiet status line ──────────────────────────────────────────────
-        conversionStatus?.let { StatusLine(it, dismissable = !isConverting) { viewModel.clearConversionStatus() } }
-        scanStatus?.let { StatusLine(it, dismissable = !isScanning) { viewModel.clearScanStatus() } }
-
-        // ── Shelves ────────────────────────────────────────────────────────
-        val libraryIsTrulyEmpty = totalBooks == 0 && currentlyReading.isEmpty()
-        when {
-            libraryIsTrulyEmpty && !isSearching -> {
-                EmptyLibrary(
-                    onAddBook = { filePicker.launch(BOOK_MIME_TYPES) },
-                    onScanDevice = onRequestScan,
-                )
-            }
-            displayedBooks.isEmpty() && isSearching -> {
-                Box(Modifier.fillMaxWidth().padding(top = 64.dp), contentAlignment = Alignment.Center) {
-                    Text("No books match “${searchQuery.trim()}”.", style = CalmTypography.emptyBody)
-                }
-            }
-            displayedBooks.isEmpty() && !isSearching -> {
-                NoMatchesHere(
-                    formatFilters = formatFilters,
-                    selectedCollection = selectedCollection,
-                    onClearFilters = {
-                        viewModel.clearFormatFilters()
-                        viewModel.selectCollection(null)
-                    },
-                )
-            }
-            else -> {
-                val shelfLabel = when {
-                    isSearching -> "Found"
-                    selectedCollection != null -> selectedCollection.name
-                    activeFormat != null -> "$activeFormat books"
-                    else -> "All books"
-                }
-                ShelfGrid(
-                    books = displayedBooks,
-                    currentlyReading = if (showCurrentlyReading) currentlyReading else emptyList(),
-                    shelfLabel = shelfLabel,
-                    myShelf = if (showCurrentlyReading && activeFormat == null) myShelf else emptyList(),
-                    showShelfHint = showCurrentlyReading && activeFormat == null && myShelf.isEmpty(),
-                    todaysPick = if (showCurrentlyReading && activeFormat == null && !selectionMode) todaysPick else null,
-                    newArrivals = if (showCurrentlyReading && activeFormat == null && sortField != SortField.DATE_ADDED) newArrivals else emptyList(),
-                    onBookClick = { book ->
-                        if (selectionMode) {
-                            selectedIds = if (book.id in selectedIds) selectedIds - book.id else selectedIds + book.id
-                        } else onBookClick(book)
-                    },
-                    onBookLongClick = { book ->
-                        if (selectionMode) {
-                            selectedIds = if (book.id in selectedIds) selectedIds - book.id else selectedIds + book.id
-                        } else longPressBook = book
-                    },
-                    selectionMode = selectionMode,
-                    selectedIds = selectedIds,
-                )
+        // ── Bottom tabs ──────────────────────────────────────────────────
+        if (!selectionMode) {
+            HairlineRule()
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = PAGE_PADDING).navigationBarsPadding(),
+                horizontalArrangement = Arrangement.spacedBy(22.dp),
+            ) {
+                BottomTab("My shelf", home) { home = true; showMore = false; showSort = false }
+                BottomTab("Library", !home) { home = false; showMore = false }
             }
         }
     }
@@ -410,6 +443,18 @@ private fun HeaderWord(text: String, onClick: () -> Unit) {
         style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 14.sp, color = Ink),
         modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 6.dp),
     )
+}
+
+@Composable
+private fun BottomTab(label: String, selected: Boolean, onClick: () -> Unit) {
+    Column(Modifier.width(IntrinsicSize.Max).clickable(onClick = onClick)) {
+        Text(
+            text = label,
+            style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 15.sp, color = if (selected) Ink else Grey),
+            modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
+        )
+        Box(Modifier.fillMaxWidth().height(2.dp).background(if (selected) Ink else Color.Transparent))
+    }
 }
 
 /** Kindle-style tab: the selected word is black with a firm underline. */
@@ -720,7 +765,7 @@ private fun BookActionSheet(
                 else -> {
                     val actions = listOfNotNull(
                         "Open" to onOpen,
-                        (if (pinned) "Take off my shelf" else "Pin to my shelf") to onTogglePin,
+                        (if (pinned) "Take off my shelf" else "Put on my shelf") to onTogglePin,
                         "Edit title or author…" to { editing = true },
                         if (!book.isCurrentlyReading || book.progress < 1f) "Mark as finished" to onMarkFinished else null,
                         if (book.isCurrentlyReading) "Take off Reading now" to onRemoveFromReading else null,
