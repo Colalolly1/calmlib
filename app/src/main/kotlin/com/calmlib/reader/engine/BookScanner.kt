@@ -57,7 +57,11 @@ class BookScanner(
                 continue
             }
             val book = repository.importFromFile(file)
-            if (book != null) {
+            if (book != null && book.filePath != file.absolutePath) {
+                // Same book already in the library under another path (a copy
+                // in a second folder): not new, so don't announce it.
+                skipped++
+            } else if (book != null) {
                 imported++
                 // If KOReader (or another reader) left a sidecar with progress, pull it in.
                 val progress = readKoreaderProgress(file)

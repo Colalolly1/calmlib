@@ -39,7 +39,7 @@ private val BOOK_MIME_TYPES = arrayOf(
 private val PAGE_PADDING = 22.dp
 private val Ink = Color.Black
 private val Grey = Color(0xFF6E6E6E)
-private val LightGrey = Color(0xFFA0A0A0)
+private val LightGrey = Color(0xFF777777)
 private val Hairline = Color(0xFFDADADA)
 private val Paper = Color(0xFFF6F6F6)
 

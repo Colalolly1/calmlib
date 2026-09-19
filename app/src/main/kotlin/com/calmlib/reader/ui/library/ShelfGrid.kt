@@ -353,7 +353,7 @@ private fun Colophon(count: Int) {
         Spacer(Modifier.height(10.dp))
         Text(
             text = "$count book${if (count == 1) "" else "s"} on these shelves",
-            style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 12.sp, color = Color(0xFF888888)),
+            style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 12.sp, color = Color(0xFF777777)),
         )
     }
 }

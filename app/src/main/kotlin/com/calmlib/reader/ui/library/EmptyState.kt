@@ -119,7 +119,7 @@ fun EmptyLibrary(
             style = TextStyle(
                 fontFamily = CalmFonts.sans,
                 fontSize = 11.sp,
-                color = Color(0xFF888888),
+                color = Color(0xFF777777),
             ),
         )
         Spacer(Modifier.height(32.dp))

@@ -85,7 +85,7 @@ object CalmTypography {
         fontFamily = CalmFonts.sans,
         fontWeight = FontWeight.Normal,
         fontSize = 11.sp,
-        color = androidx.compose.ui.graphics.Color(0xFF999999),
+        color = androidx.compose.ui.graphics.Color(0xFF777777),
     )
 
     val body = TextStyle(
@@ -117,6 +117,6 @@ object CalmTypography {
         fontFamily = CalmFonts.sans,
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
-        color = androidx.compose.ui.graphics.Color(0xFF999999),
+        color = androidx.compose.ui.graphics.Color(0xFF777777),
     )
 }

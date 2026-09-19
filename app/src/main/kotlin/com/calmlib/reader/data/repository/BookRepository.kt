@@ -83,12 +83,16 @@ class BookRepository(private val context: Context) {
                     title = engine.title.ifEmpty { title }
                 } catch (_: Exception) { }
 
-                BookFormat.PDF -> coverBitmap = renderPdfCover(file)
+                BookFormat.PDF -> { }
             }
 
             // Content-based dedup so a manually imported book + a scanned one
             // at a different path don't both register.
             bookDao.getByFingerprint(title, author, file.length())?.let { return@withContext it }
+
+            // Rendering a first page is the slow part, so it waits until we know
+            // this is a genuinely new book and not a copy of one we have.
+            if (format == BookFormat.PDF) coverBitmap = renderPdfCover(file)
 
             val coverName = "scan_${file.absolutePath.hashCode().toUInt()}"
             val coverPath = coverBitmap?.let { saveCover(it, coverName) }
