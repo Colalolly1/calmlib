@@ -19,6 +19,10 @@ data class ReadingSettings(
     val justify: Boolean = true,
     val hyphenation: Boolean = true,
     val bionicReading: Boolean = false,
+    /** PDF only: 1 = fit the page width; kept per book so every page opens at your zoom. */
+    val pdfZoom: Float = 1f,
+    /** PDF only: crop the white border around the printed area so text fills the screen. */
+    val pdfTrimMargins: Boolean = false,
 ) {
     fun toJson(): String = JSONObject().apply {
         put("fontSize", fontSize.toDouble())
@@ -34,6 +38,8 @@ data class ReadingSettings(
         put("justify", justify)
         put("hyphenation", hyphenation)
         put("bionicReading", bionicReading)
+        put("pdfZoom", pdfZoom.toDouble())
+        put("pdfTrimMargins", pdfTrimMargins)
     }.toString()
 
     companion object {
@@ -63,6 +69,8 @@ data class ReadingSettings(
                     justify = obj.optBoolean("justify", d.justify),
                     hyphenation = obj.optBoolean("hyphenation", d.hyphenation),
                     bionicReading = obj.optBoolean("bionicReading", d.bionicReading),
+                    pdfZoom = obj.optDouble("pdfZoom", d.pdfZoom.toDouble()).toFloat().coerceIn(1f, 4f),
+                    pdfTrimMargins = obj.optBoolean("pdfTrimMargins", d.pdfTrimMargins),
                 )
             } catch (_: Exception) {
                 ReadingSettings()

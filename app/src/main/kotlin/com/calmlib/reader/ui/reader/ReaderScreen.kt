@@ -248,6 +248,7 @@ fun ReaderScreenFull(
                         isSpeaking = isSpeaking,
                         isGuestPreview = isGuestPreview,
                         onAddToLibrary = onAddToLibrary,
+                        isPdf = isPdf,
                     )
                 }
             }
@@ -409,6 +410,7 @@ private fun ControlsOverlay(
     isSpeaking: Boolean,
     isGuestPreview: Boolean = false,
     onAddToLibrary: () -> Unit = {},
+    isPdf: Boolean = false,
 ) {
     var tab by remember { mutableStateOf(0) }   // 0 = Go, 1 = Type, 2 = Screen
 
@@ -429,7 +431,7 @@ private fun ControlsOverlay(
             }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf("Go", "Type", "Screen").forEachIndexed { i, label ->
+                listOf("Go", if (isPdf) "Page" else "Type", "Screen").forEachIndexed { i, label ->
                     val active = tab == i
                     Box(
                         Modifier
@@ -461,7 +463,7 @@ private fun ControlsOverlay(
                         onToc, onBookmarks, onSearch, onHighlights, onToggleTts, isSpeaking, onRefresh,
                         isGuestPreview, onAddToLibrary,
                     )
-                    1 -> typeTabContent(settings, onSettingsChanged)
+                    1 -> if (isPdf) pdfTabContent(settings, onSettingsChanged) else typeTabContent(settings, onSettingsChanged)
                     else -> screenTabContent(settings, onSettingsChanged, onRefresh)
                 }
             }
@@ -526,6 +528,46 @@ private fun androidx.compose.foundation.lazy.LazyListScope.goTabContent(
             }
         }
         Spacer(Modifier.height(32.dp))
+    }
+}
+
+/**
+ * PDFs have no text to restyle, so their tab is about the page: how far in to
+ * zoom (remembered for this book, applied to every page) and whether to crop
+ * the white border so the print fills the screen.
+ */
+private fun androidx.compose.foundation.lazy.LazyListScope.pdfTabContent(
+    settings: ReadingSettings,
+    onSettingsChanged: (ReadingSettings) -> Unit,
+) {
+    item {
+        Spacer(Modifier.height(14.dp))
+        SectionLabel("PAGE")
+        ControlRow("Zoom", "${(settings.pdfZoom * 100).toInt()}%  ·  applies to every page of this book") {
+            PlusMinus(
+                onMinus = { onSettingsChanged(settings.copy(pdfZoom = (settings.pdfZoom - 0.25f).coerceAtLeast(1f))) },
+                onPlus = { onSettingsChanged(settings.copy(pdfZoom = (settings.pdfZoom + 0.25f).coerceAtMost(4f))) },
+            )
+        }
+        Divider()
+        if (settings.pdfZoom > 1.001f) {
+            ActionItem("Fit to width") { onSettingsChanged(settings.copy(pdfZoom = 1f)) }
+        }
+        ToggleRow("Trim white margins", settings.pdfTrimMargins) { onSettingsChanged(settings.copy(pdfTrimMargins = it)) }
+        Divider()
+        Text(
+            "Pinch the page to zoom, double-tap to zoom in and out. Trimming crops the blank border so the text fills the screen; combine it with a little zoom for scanned books.",
+            style = CalmTypography.controlValue.copy(fontSize = 12.sp),
+            modifier = Modifier.padding(top = 10.dp),
+        )
+        Spacer(Modifier.height(14.dp))
+        SectionLabel("OPENING THIS PANEL")
+        Text(
+            "Tap the middle of the page, or hold a finger anywhere on it for a moment.",
+            style = CalmTypography.controlValue.copy(fontSize = 12.sp),
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        Spacer(Modifier.height(24.dp))
     }
 }
 

@@ -24,6 +24,13 @@ class PdfReaderView @JvmOverloads constructor(
     private var boldMode: Boolean = false
     var onPageChanged: ((page: Int, total: Int) -> Unit)? = null
     var onTapZone: ((zone: TapZone) -> Unit)? = null
+    /** A long hold anywhere on the page: the reader opens its settings. */
+    var onLongPress: (() -> Unit)? = null
+    /** Fired when the user finishes a pinch or double-tap, so the zoom can be remembered. */
+    var onZoomChanged: ((Float) -> Unit)? = null
+    private var trimMargins: Boolean = false
+
+    val zoom: Float get() = scale
 
     enum class TapZone { LEFT, RIGHT, CENTER }
 
@@ -58,6 +65,7 @@ class PdfReaderView @JvmOverloads constructor(
         }
         override fun onScaleEnd(detector: ScaleGestureDetector) {
             isScaling = false
+            onZoomChanged?.invoke(scale)
             scheduleRerender()
         }
     })
@@ -92,7 +100,12 @@ class PdfReaderView @JvmOverloads constructor(
             }
             invalidate()
             scheduleRerender()
+            onZoomChanged?.invoke(scale)
             return true
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            if (!isScaling) onLongPress?.invoke()
         }
     })
 
@@ -111,15 +124,21 @@ class PdfReaderView @JvmOverloads constructor(
     fun goToPage(page: Int) {
         val eng = engine ?: return
         _currentPage = page.coerceIn(0, eng.pageCount - 1)
-        resetZoom()
+        backToTop()
         renderCurrent()
+    }
+
+    /** New page, same zoom: start at the top-left of the page (left-to-right reading). */
+    private fun backToTop() {
+        translateY = 0f
+        clampTranslate()
     }
 
     fun nextPage(): Boolean {
         val eng = engine ?: return false
         if (_currentPage < eng.pageCount - 1) {
             _currentPage++
-            resetZoom()
+            backToTop()
             renderCurrent()
             return true
         }
@@ -129,7 +148,7 @@ class PdfReaderView @JvmOverloads constructor(
     fun prevPage(): Boolean {
         if (_currentPage > 0) {
             _currentPage--
-            resetZoom()
+            backToTop()
             renderCurrent()
             return true
         }
@@ -146,6 +165,61 @@ class PdfReaderView @JvmOverloads constructor(
         scale = 1f
         translateX = 0f
         translateY = 0f
+    }
+
+    /** Set the zoom directly (from the settings panel or a remembered value), centred on the page. */
+    fun setZoom(z: Float) {
+        val target = z.coerceIn(minScale, maxScale)
+        if (kotlin.math.abs(target - scale) < 0.001f) return
+        scale = target
+        val drawW = bitmapDisplayWidth()
+        translateX = -((drawW - width) / 2f).coerceAtLeast(0f)
+        translateY = 0f
+        clampTranslate()
+        invalidate()
+        scheduleRerender()
+    }
+
+    fun setTrimMargins(trim: Boolean) {
+        if (trim == trimMargins) return
+        trimMargins = trim
+        translateX = 0f; translateY = 0f
+        renderCurrent()
+    }
+
+    /**
+     * Crop the page to its printed area. Scanned and typeset PDFs alike carry a
+     * wide white border that wastes a phone screen; trimming it is the single
+     * biggest readability win for PDFs here. Sampled every few pixels so it
+     * costs a few milliseconds, and left alone if the "content" looks like specks.
+     */
+    private fun trimToContent(src: Bitmap, outW: Int): Bitmap {
+        val w = src.width; val h = src.height
+        val step = max(1, w / 320)
+        val row = IntArray(w)
+        var top = -1; var bottom = -1; var left = w; var right = -1
+        var y = 0
+        while (y < h) {
+            src.getPixels(row, 0, w, 0, y, w, 1)
+            var has = false
+            var x = 0
+            while (x < w) {
+                val c = row[x]
+                val lum = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
+                if (lum < 170) { has = true; if (x < left) left = x; if (x > right) right = x }
+                x += step
+            }
+            if (has) { if (top < 0) top = y; bottom = y }
+            y += step
+        }
+        if (top < 0 || right <= left) return src
+        val pad = (w * 0.015f).toInt()
+        val l = (left - pad).coerceAtLeast(0); val t = (top - pad).coerceAtLeast(0)
+        val r = (right + pad).coerceAtMost(w - 1); val b = (bottom + pad).coerceAtMost(h - 1)
+        if (r - l < w * 0.25f || b - t < h * 0.2f) return src
+        val cropped = Bitmap.createBitmap(src, l, t, r - l + 1, b - t + 1)
+        val outH = (cropped.height * (outW.toFloat() / cropped.width)).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(cropped, outW, outH, true)
     }
 
     private fun bitmapDisplayWidth(): Float = (currentBitmap?.width?.toFloat() ?: width.toFloat()) * scaleVsBaseRender()
@@ -194,14 +268,20 @@ class PdfReaderView @JvmOverloads constructor(
         // would freeze the UI thread otherwise. Token guards against piling up renders
         // when the user flips pages quickly: only the most recent token wins.
         val token = ++renderToken
+        val trim = trimMargins
         kotlin.concurrent.thread(name = "PdfRender", isDaemon = true) {
             val bmp = try {
-                engine.renderPage(page, targetW, contrast, bold)
+                if (trim) {
+                    // Render at double width so the cropped area still has detail once it fills the screen.
+                    val wide = (targetW * 2).coerceAtMost(baseW * 4)
+                    engine.renderPage(page, wide, contrast, bold)?.let { trimToContent(it, targetW) }
+                } else engine.renderPage(page, targetW, contrast, bold)
             } catch (_: Throwable) { null }
             post {
                 if (token == renderToken) {
                     currentBitmap = bmp
                     bitmapBaseWidth = targetW
+                    clampTranslate()
                     invalidate()
                 }
             }

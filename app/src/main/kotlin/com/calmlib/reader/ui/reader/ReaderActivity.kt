@@ -522,6 +522,14 @@ class ReaderActivity : ComponentActivity() {
         }
         val s = settings.value
         view.setDisplayMode(s.contrastBoost, s.boldMode)
+        view.setTrimMargins(s.pdfTrimMargins)
+        view.post { view.setZoom(s.pdfZoom) }
+        view.onLongPress = { showControls.value = true }
+        view.onZoomChanged = { z ->
+            val updated = settings.value.copy(pdfZoom = z)
+            settings.value = updated
+            persistableBook()?.let { b -> lifecycleScope.launch { bookRepo.saveReadingSettings(b.id, updated.toJson()) } }
+        }
         view.onTapZone = { zone ->
             when (zone) {
                 PdfReaderView.TapZone.LEFT -> prevPage()
@@ -1516,6 +1524,8 @@ class ReaderActivity : ComponentActivity() {
     private fun applySettings(s: ReadingSettings, retriesLeft: Int = 6) {
         if (isPdf.value) {
             pdfView?.setDisplayMode(s.contrastBoost, s.boldMode)
+            pdfView?.setTrimMargins(s.pdfTrimMargins)
+            pdfView?.setZoom(s.pdfZoom)
             return
         }
         val fontCss = fontFamilyCss(s.fontFamily).replace("'", "\\'")
@@ -1846,10 +1856,26 @@ class ReaderActivity : ComponentActivity() {
                 }
             })
 
-            setOnTouchListener { _, event ->
+            // A long, still hold (1.5 s) opens the reading settings. Text selection
+            // starts earlier than that, so a normal long-press still selects; only
+            // keeping the finger down carries on into the settings.
+            val holdToOpen = Runnable { if (!activity.showControls.value) activity.showControls.value = true }
+            var holdX = 0f; var holdY = 0f
+            val slop = android.view.ViewConfiguration.get(activity).scaledTouchSlop * 2
+            setOnTouchListener { v, event ->
                 sd.onTouchEvent(event)
                 // Don't dispatch single-finger taps to the GestureDetector while pinching.
                 if (!sd.isInProgress) gd.onTouchEvent(event)
+                when (event.actionMasked) {
+                    android.view.MotionEvent.ACTION_DOWN -> {
+                        holdX = event.x; holdY = event.y
+                        v.removeCallbacks(holdToOpen); v.postDelayed(holdToOpen, 1500)
+                    }
+                    android.view.MotionEvent.ACTION_MOVE -> {
+                        if (event.pointerCount > 1 || kotlin.math.abs(event.x - holdX) > slop || kotlin.math.abs(event.y - holdY) > slop) v.removeCallbacks(holdToOpen)
+                    }
+                    android.view.MotionEvent.ACTION_POINTER_DOWN, android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.removeCallbacks(holdToOpen)
+                }
                 false   // let the WebView see the event too (selection, scroll)
             }
         }
