@@ -5,8 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Typeface
 import android.net.Uri
 import com.calmlib.reader.data.db.AppDatabase
 import com.calmlib.reader.data.model.Book
@@ -85,7 +83,7 @@ class BookRepository(private val context: Context) {
                     title = engine.title.ifEmpty { title }
                 } catch (_: Exception) { }
 
-                else -> { }
+                BookFormat.PDF -> coverBitmap = renderPdfCover(file)
             }
 
             // Content-based dedup so a manually imported book + a scanned one
@@ -94,7 +92,6 @@ class BookRepository(private val context: Context) {
 
             val coverName = "scan_${file.absolutePath.hashCode().toUInt()}"
             val coverPath = coverBitmap?.let { saveCover(it, coverName) }
-                ?: generateTextCover(title, author, coverName)
 
             val book = Book(
                 title = title,
@@ -153,7 +150,7 @@ class BookRepository(private val context: Context) {
                     title = engine.title.ifEmpty { title }
                 } catch (_: Exception) { }
 
-                else -> { }
+                BookFormat.PDF -> coverBitmap = renderPdfCover(tempFile)
             }
 
             // Content-based dedup — if we already have this exact book from a scan,
@@ -168,7 +165,6 @@ class BookRepository(private val context: Context) {
             tempFile.delete()
 
             val coverPath = coverBitmap?.let { saveCover(it, destFile.nameWithoutExtension) }
-                ?: generateTextCover(title, author, destFile.nameWithoutExtension)
 
             val book = Book(
                 title = title,
@@ -206,18 +202,13 @@ class BookRepository(private val context: Context) {
         val author = newAuthor.trim()
         bookDao.renameBook(book.id, title, author)
 
-        // Try to detect a typeset cover by its dimensions, then re-render with the new
-        // title + author. Cheap heuristic — if the cover happens to be 240×360 it's
-        // a typeset one. EPUB covers are usually 600×900-ish.
-        try {
-            val coverPath = book.coverPath ?: return@withContext
-            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            android.graphics.BitmapFactory.decodeFile(coverPath, opts)
-            if (opts.outWidth == 240 && opts.outHeight == 360) {
-                val name = File(coverPath).nameWithoutExtension
-                generateTextCover(title, author, name)
-            }
-        } catch (_: Exception) { /* leave the cover alone if anything fails */ }
+        // Old versions baked the title into a placeholder PNG; if one is still
+        // attached, drop it so the shelf draws a live jacket with the new title.
+        val coverPath = book.coverPath ?: return@withContext
+        if (isGeneratedPlaceholder(File(coverPath))) {
+            File(coverPath).delete()
+            bookDao.update(book.copy(title = title, author = author, coverPath = null))
+        }
     }
 
     /**
@@ -379,66 +370,57 @@ class BookRepository(private val context: Context) {
         return file.absolutePath
     }
 
-    private fun generateTextCover(title: String, author: String, name: String): String {
-        val w = 240
-        val h = 360
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        canvas.drawColor(Color.WHITE)
-
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK
-            textSize = 22f
-            typeface = Typeface.SERIF
-        }
-        val authorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.DKGRAY
-            textSize = 14f
-            typeface = Typeface.SERIF
-        }
-        val linePaint = Paint().apply {
-            color = Color.BLACK
-            strokeWidth = 1.5f
-        }
-
-        val margin = 20f
-        val maxWidth = w - margin * 2
-
-        var y = 80f
-        for (line in wrapText(title, titlePaint, maxWidth)) {
-            canvas.drawText(line, margin, y, titlePaint)
-            y += titlePaint.textSize * 1.3f
-        }
-
-        y += 12f
-        canvas.drawLine(margin, y, margin + 60, y, linePaint)
-        y += 24f
-
-        if (author.isNotEmpty()) {
-            for (line in wrapText(author, authorPaint, maxWidth)) {
-                canvas.drawText(line, margin, y, authorPaint)
-                y += authorPaint.textSize * 1.4f
+    /**
+     * First page of a PDF as its cover — what you'd see on a real shelf.
+     * Returns null for encrypted or malformed files; the shelf then draws a
+     * typeset jacket instead.
+     */
+    private fun renderPdfCover(file: File): Bitmap? = try {
+        android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
+            android.graphics.pdf.PdfRenderer(fd).use { renderer ->
+                if (renderer.pageCount == 0) return null
+                renderer.openPage(0).use { page ->
+                    val w = 480
+                    val h = (w * page.height.toFloat() / page.width.coerceAtLeast(1)).toInt().coerceIn(1, 1400)
+                    val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    Canvas(bmp).drawColor(Color.WHITE)
+                    page.render(bmp, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    bmp
+                }
             }
         }
+    } catch (_: Throwable) { null }
 
-        return saveCover(bitmap, name)
+    /**
+     * One-off repair for libraries built by older versions, which baked the
+     * file name into a 240x360 placeholder PNG for every coverless book. Those
+     * are dropped (PDFs get a real first-page cover instead) so the shelves can
+     * show proper jackets. Returns how many books were touched.
+     */
+    suspend fun repairPlaceholderCovers(): Int = withContext(Dispatchers.IO) {
+        var changed = 0
+        for (book in bookDao.allOnce()) {
+            val path = book.coverPath
+            val isPlaceholder = path != null && isGeneratedPlaceholder(File(path))
+            if (path != null && !isPlaceholder && File(path).exists()) continue
+            val fresh = if (book.format == BookFormat.PDF) {
+                val src = File(book.filePath)
+                if (src.exists()) renderPdfCover(src)?.let { saveCover(it, "pdf_${book.id}") } else null
+            } else null
+            if (fresh != null || path != null) {
+                if (isPlaceholder) File(path!!).delete()
+                bookDao.update(book.copy(coverPath = fresh))
+                changed++
+            }
+        }
+        changed
     }
 
-    private fun wrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
-        val words = text.split(" ")
-        val lines = mutableListOf<String>()
-        var current = ""
-        for (word in words) {
-            val test = if (current.isEmpty()) word else "$current $word"
-            if (paint.measureText(test) <= maxWidth) {
-                current = test
-            } else {
-                if (current.isNotEmpty()) lines.add(current)
-                current = word
-            }
-        }
-        if (current.isNotEmpty()) lines.add(current)
-        return lines
+    private fun isGeneratedPlaceholder(file: File): Boolean {
+        if (!file.exists()) return false
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, o)
+        return o.outWidth == 240 && o.outHeight == 360
     }
 
     private fun sanitize(name: String): String =

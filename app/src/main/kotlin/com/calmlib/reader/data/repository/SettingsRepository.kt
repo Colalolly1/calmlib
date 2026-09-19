@@ -7,6 +7,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.calmlib.reader.data.model.ReadingSettings
 import com.calmlib.reader.data.model.SortField
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore("settings")
@@ -27,6 +28,8 @@ class SettingsRepository(context: Context) {
         val sortField = stringPreferencesKey("sort_field")
         val shelfView = booleanPreferencesKey("shelf_view")
         val firstRun = booleanPreferencesKey("first_run_complete")
+        val coversRepaired = booleanPreferencesKey("covers_repaired_v1")
+        val pinnedBooks = stringPreferencesKey("pinned_books")
         val justify = booleanPreferencesKey("justify")
         val hyphenation = booleanPreferencesKey("hyphenation")
         val bionic = booleanPreferencesKey("bionic")
@@ -119,6 +122,17 @@ class SettingsRepository(context: Context) {
     }
 
     val firstRunComplete: Flow<Boolean> = store.data.map { it[Keys.firstRun] ?: false }
+
+    /** Books the reader has put on their own shelf, in the order they pinned them. */
+    val pinnedBooks: Flow<List<Long>> = store.data.map { prefs ->
+        (prefs[Keys.pinnedBooks] ?: "").split(',').mapNotNull { it.trim().toLongOrNull() }
+    }
+    suspend fun setPinnedBooks(ids: List<Long>) {
+        store.edit { it[Keys.pinnedBooks] = ids.joinToString(",") }
+    }
+
+    suspend fun coversRepaired(): Boolean = store.data.first()[Keys.coversRepaired] ?: false
+    suspend fun setCoversRepaired() { store.edit { it[Keys.coversRepaired] = true } }
 
     suspend fun setFirstRunComplete(complete: Boolean) {
         store.edit { it[Keys.firstRun] = complete }

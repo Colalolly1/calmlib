@@ -53,13 +53,61 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /** Every book, newest first, regardless of filter — feeds counts and the home shelves. */
+    val allBooks: StateFlow<List<Book>> = bookRepo.books(SortField.DATE_ADDED)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     /** How many books of each format the whole library holds, ignoring the filter. */
-    val formatCounts: StateFlow<Map<String, Int>> = bookRepo.books(SortField.TITLE)
+    val formatCounts: StateFlow<Map<String, Int>> = allBooks
         .map { list -> list.groupingBy { it.format.name }.eachCount() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
+    /**
+     * One book you have never opened, chosen fresh each day — the librarian
+     * leaving something on the counter for you. Same pick all day, so it
+     * doesn't shuffle every time the screen redraws.
+     */
+    val todaysPick: StateFlow<Book?> = allBooks
+        .map { list ->
+            val unopened = list.filter { it.lastRead == 0L && it.progress == 0f && !it.isCurrentlyReading }
+                .sortedBy { it.id }
+            if (unopened.isEmpty()) null
+            else unopened[(java.time.LocalDate.now().toEpochDay() % unopened.size).toInt()]
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Books added in the last fortnight, newest first, at most two shelves' worth. */
+    val newArrivals: StateFlow<List<Book>> = allBooks
+        .map { list ->
+            val cutoff = System.currentTimeMillis() - 14L * 24 * 60 * 60 * 1000
+            list.filter { it.dateAdded > cutoff }.sortedByDescending { it.dateAdded }.take(4)
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     val currentlyReading: StateFlow<List<Book>> = bookRepo.currentlyReading()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val pinnedIds: StateFlow<List<Long>> = settingsRepo.pinnedBooks
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * The reader's own little bookshelf at the top of the library: the books
+     * they pinned, in pin order, then anything they're currently reading that
+     * isn't pinned yet.
+     */
+    val myShelf: StateFlow<List<Book>> = combine(allBooks, pinnedIds, currentlyReading) { all, pins, reading ->
+        val byId = all.associateBy { it.id }
+        val pinned = pins.mapNotNull { byId[it] }
+        pinned + reading.filter { it.id !in pins }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun togglePin(book: Book) {
+        viewModelScope.launch {
+            val pins = pinnedIds.value
+            settingsRepo.setPinnedBooks(if (book.id in pins) pins - book.id else pins + book.id)
+        }
+    }
+
 
     val collections: StateFlow<List<Collection>> = bookRepo.collections()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -130,6 +178,8 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
         if (booksToDelete.isEmpty()) return
         viewModelScope.launch {
             settingsRepo.addIgnoredScanPaths(booksToDelete.map { it.filePath })
+            val gone = booksToDelete.map { it.id }.toSet()
+            if (pinnedIds.value.any { it in gone }) settingsRepo.setPinnedBooks(pinnedIds.value.filter { it !in gone })
             booksToDelete.forEach { bookRepo.deleteBook(it) }
             _scanStatus.value = if (booksToDelete.size == 1) {
                 "Removed “${booksToDelete.first().title}” from your library."
@@ -263,6 +313,16 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
      * Checks if it's been more than 7 days since the last automatic backup and runs
      * one if so. Backups land in the app's external storage so they survive uninstalls.
      */
+    /** Swap old baked-in placeholder covers for real PDF first pages, once. */
+    fun repairCoversOnce() {
+        viewModelScope.launch {
+            if (settingsRepo.coversRepaired()) return@launch
+            val n = bookRepo.repairPlaceholderCovers()
+            settingsRepo.setCoversRepaired()
+            if (n > 0) _scanStatus.value = "Refreshed covers for $n book${if (n == 1) "" else "s"}."
+        }
+    }
+
     fun maybeRunWeeklyBackup() {
         viewModelScope.launch {
             val last = settingsRepo.lastAutoBackup.first()

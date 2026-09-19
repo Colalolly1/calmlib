@@ -10,6 +10,9 @@ interface BookDao {
     @Query("SELECT * FROM books ORDER BY title ASC")
     fun allByTitle(): Flow<List<Book>>
 
+    @Query("SELECT * FROM books")
+    suspend fun allOnce(): List<Book>
+
     @Query("SELECT * FROM books ORDER BY author ASC")
     fun allByAuthor(): Flow<List<Book>>
 

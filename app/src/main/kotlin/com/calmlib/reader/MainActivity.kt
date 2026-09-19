@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         viewModel.maybeRunWeeklyBackup()
+        viewModel.repairCoversOnce()
 
         // Quiet rescan on every resume so books copied onto the phone show up
         // without a manual scan. This is safe now (unlike the old auto-rescan

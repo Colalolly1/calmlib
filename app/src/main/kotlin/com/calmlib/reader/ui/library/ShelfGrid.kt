@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,6 +39,10 @@ fun ShelfGrid(
     books: List<Book>,
     currentlyReading: List<Book>,
     shelfLabel: String,
+    myShelf: List<Book> = emptyList(),
+    showShelfHint: Boolean = false,
+    todaysPick: Book? = null,
+    newArrivals: List<Book> = emptyList(),
     onBookClick: (Book) -> Unit,
     onBookLongClick: (Book) -> Unit = {},
     selectionMode: Boolean = false,
@@ -56,31 +61,63 @@ fun ShelfGrid(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
         ) {
-            if (currentlyReading.isNotEmpty()) {
-                item { ShelfHeader("Reading now") }
+            if (myShelf.isNotEmpty()) {
                 item {
-                    ReadingNowHero(
-                        book = currentlyReading.first(),
-                        coverWidth = coverWidth,
-                        coverHeight = coverHeight,
-                        onClick = { onBookClick(currentlyReading.first()) },
-                        onLongClick = { onBookLongClick(currentlyReading.first()) },
+                    ShelfHeader("My shelf")
+                    MyShelfRow(
+                        books = myShelf,
+                        coverWidth = coverWidth * 0.6f,
+                        coverHeight = coverHeight * 0.6f,
+                        onBookClick = onBookClick,
+                        onBookLongClick = onBookLongClick,
                         selectionMode = selectionMode,
-                        selected = currentlyReading.first().id in selectedIds,
+                        selectedIds = selectedIds,
+                    )
+                    currentlyReading.firstOrNull()?.let { latest ->
+                        ResumeLine(latest, onClick = { onBookClick(latest) })
+                    }
+                }
+            } else if (showShelfHint) {
+                item {
+                    ShelfHeader("My shelf")
+                    Text(
+                        text = "Empty for now. Long-press any book and choose “Pin to my shelf” to stand it here.",
+                        style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 13.sp, lineHeight = 18.sp, color = Color(0xFF777777)),
+                        modifier = Modifier.padding(horizontal = SHELF_SIDE_PADDING),
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    ShelfBoard()
+                    Spacer(Modifier.height(14.dp))
+                }
+            }
+
+            if (todaysPick != null && todaysPick.id !in readingIds) {
+                item {
+                    if (myShelf.isNotEmpty() || showShelfHint) Spacer(Modifier.height(10.dp))
+                    ShelfHeader("From the shelf today")
+                    TodaysPickCard(
+                        book = todaysPick,
+                        coverWidth = coverWidth * 0.62f,
+                        coverHeight = coverHeight * 0.62f,
+                        onClick = { onBookClick(todaysPick) },
+                        onLongClick = { onBookLongClick(todaysPick) },
                     )
                 }
-                val restReading = currentlyReading.drop(1)
-                if (restReading.isNotEmpty()) {
-                    item { ShelfHeader("Also reading") }
-                    items(restReading.chunked(BOOKS_PER_SHELF)) { row ->
-                        Shelf(row, coverWidth, coverHeight, onBookClick, onBookLongClick, selectionMode, selectedIds)
-                    }
+            }
+
+            if (newArrivals.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(10.dp))
+                    ShelfHeader("New arrivals")
+                }
+                items(newArrivals.chunked(BOOKS_PER_SHELF)) { row ->
+                    Shelf(row, coverWidth, coverHeight, onBookClick, onBookLongClick, selectionMode, selectedIds)
                 }
             }
 
             if (otherBooks.isNotEmpty()) {
                 item {
-                    if (currentlyReading.isNotEmpty()) Spacer(Modifier.height(14.dp))
+                    if (myShelf.isNotEmpty() || showShelfHint || todaysPick != null || newArrivals.isNotEmpty()) Spacer(Modifier.height(10.dp))
                     ShelfHeader(shelfLabel)
                 }
                 items(otherBooks.chunked(BOOKS_PER_SHELF)) { row ->
@@ -89,9 +126,9 @@ fun ShelfGrid(
             }
 
             item {
-                Spacer(Modifier.height(28.dp))
-                QuoteFooter()
-                Spacer(Modifier.height(36.dp))
+                Spacer(Modifier.height(24.dp))
+                Colophon(books.size)
+                Spacer(Modifier.height(40.dp))
             }
         }
     }
@@ -114,83 +151,77 @@ private fun SelectionMark(selected: Boolean, modifier: Modifier = Modifier) {
 }
 
 /**
- * The book you're in the middle of: cover on the left, title, author, progress
- * and a filled Resume button on the right, standing on its own shelf.
+ * The reader's own shelf: a row of smaller covers standing on one plank,
+ * scrolling sideways if it fills up. Progress shows as the thin bar on each
+ * cover, so a glance tells you where you are in everything.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ReadingNowHero(
-    book: Book,
+private fun MyShelfRow(
+    books: List<Book>,
     coverWidth: Dp,
     coverHeight: Dp,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    selectionMode: Boolean = false,
-    selected: Boolean = false,
+    onBookClick: (Book) -> Unit,
+    onBookLongClick: (Book) -> Unit,
+    selectionMode: Boolean,
+    selectedIds: Set<Long>,
 ) {
     Column {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-                .padding(horizontal = SHELF_SIDE_PADDING),
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = SHELF_SIDE_PADDING),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
-            Box {
-                BookCover(book = book, width = coverWidth, height = coverHeight)
-                if (selectionMode) {
-                    SelectionMark(selected, Modifier.align(Alignment.TopEnd).padding(6.dp))
-                }
-            }
-            Spacer(Modifier.width(20.dp))
-            Column(Modifier.weight(1f).padding(bottom = 10.dp)) {
-                Text(
-                    text = book.displayTitle,
-                    style = TextStyle(
-                        fontFamily = CalmFonts.serif,
-                        fontSize = 19.sp,
-                        lineHeight = 24.sp,
-                        color = Color.Black,
-                    ),
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (book.author.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = book.author,
-                        style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 13.sp, color = Color(0xFF555555)),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(Modifier.height(14.dp))
-                val pct = (book.progress * 100).toInt().coerceIn(0, 100)
-                Box(Modifier.fillMaxWidth().height(2.dp).background(Color(0xFFDDDDDD))) {
-                    Box(Modifier.fillMaxHeight().fillMaxWidth(book.progress.coerceIn(0f, 1f)).background(Color.Black))
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = if (pct > 0) "$pct% read" else "Just started",
-                    style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF777777)),
-                )
-                Spacer(Modifier.height(14.dp))
-                Box(
-                    Modifier
-                        .background(Color.Black)
-                        .clickable(onClick = onClick)
-                        .padding(horizontal = 26.dp, vertical = 11.dp),
-                ) {
-                    Text(
-                        "Resume",
-                        style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 14.sp),
-                    )
-                }
+            items(books, key = { it.id }) { book ->
+                ShelfBook(book, coverWidth, coverHeight, onBookClick, onBookLongClick, selectionMode, book.id in selectedIds)
             }
         }
         ShelfBoard()
-        Spacer(Modifier.height(22.dp))
     }
+}
+
+/** One line under the shelf: the book you were last in, and the word that takes you back. */
+@Composable
+private fun ResumeLine(book: Book, onClick: () -> Unit) {
+    val pct = (book.progress * 100).toInt().coerceIn(0, 100)
+    val where = when {
+        book.totalPages > 1 && book.currentPage > 0 -> "Page ${book.currentPage} of ${book.totalPages}"
+        pct > 0 -> "$pct% read"
+        else -> "Just started"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = SHELF_SIDE_PADDING, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = book.displayTitle,
+                style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 16.sp, color = Color.Black),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = listOfNotNull(where, lastOpened(book.lastRead)).joinToString("  ·  "),
+                style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF777777)),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(14.dp))
+        Box(
+            Modifier
+                .background(Color.Black)
+                .padding(horizontal = 20.dp, vertical = 9.dp),
+        ) {
+            Text("Resume", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 13.sp))
+        }
+    }
+    Spacer(Modifier.height(6.dp))
 }
 
 /**
@@ -234,41 +265,95 @@ private fun ShelfBoard() {
     }
 }
 
-/** Literary quote of the day, rendered as the final flourish on the shelves. */
+/**
+ * The librarian's counter: one book you've never opened, offered for today.
+ * Small cover, a line of invitation, and a single word to begin.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun QuoteFooter() {
-    val (quote, attribution) = quoteForToday()
+private fun TodaysPickCard(
+    book: Book,
+    coverWidth: Dp,
+    coverHeight: Dp,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .padding(horizontal = SHELF_SIDE_PADDING),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            BookCover(book = book, width = coverWidth, height = coverHeight)
+            Spacer(Modifier.width(18.dp))
+            Column(Modifier.weight(1f).padding(bottom = 8.dp)) {
+                Text(
+                    text = book.displayTitle,
+                    style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 16.sp, lineHeight = 21.sp, color = Color.Black),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (book.author.isNotEmpty()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = book.author,
+                        style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 12.sp, color = Color(0xFF555555)),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Still unopened. Perhaps today.",
+                    style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 12.sp, color = Color(0xFF777777)),
+                )
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier
+                        .border(1.dp, Color.Black)
+                        .clickable(onClick = onClick)
+                        .padding(horizontal = 22.dp, vertical = 9.dp),
+                ) {
+                    Text("Begin", style = CalmTypography.controlLabel.copy(fontSize = 13.sp))
+                }
+            }
+        }
+        ShelfBoard()
+        Spacer(Modifier.height(18.dp))
+    }
+}
+
+/** "Last opened yesterday" — warm, approximate, no clock-watching. */
+private fun lastOpened(ts: Long): String? {
+    if (ts <= 0L) return null
+    val days = ((System.currentTimeMillis() - ts) / (24L * 60 * 60 * 1000)).toInt()
+    return when {
+        days <= 0 -> "Opened today"
+        days == 1 -> "Last opened yesterday"
+        days < 7 -> "Last opened $days days ago"
+        days < 30 -> "Last opened ${days / 7} week${if (days / 7 == 1) "" else "s"} ago"
+        else -> "Last opened " + java.text.SimpleDateFormat("d MMMM", java.util.Locale.getDefault()).format(java.util.Date(ts))
+    }
+}
+
+/** Closing ornament — the little printer's mark at the end of a book. */
+@Composable
+private fun Colophon(count: Int) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(0.55f),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        Row(Modifier.fillMaxWidth(0.5f), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f).height(0.5.dp).background(Color(0xFF888888)))
-            Text(
-                text = " ❧ ",
-                style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 14.sp, color = Color(0xFF555555)),
-            )
+            Text(" ❧ ", style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 15.sp, color = Color(0xFF555555)))
             Box(Modifier.weight(1f).height(0.5.dp).background(Color(0xFF888888)))
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(10.dp))
         Text(
-            text = "“$quote”",
-            style = TextStyle(
-                fontFamily = CalmFonts.serif,
-                fontStyle = FontStyle.Italic,
-                fontSize = 13.sp,
-                lineHeight = 20.sp,
-                color = Color(0xFF666666),
-            ),
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = "— $attribution",
-            style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF888888)),
+            text = "$count book${if (count == 1) "" else "s"} on these shelves",
+            style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 12.sp, color = Color(0xFF888888)),
         )
     }
 }

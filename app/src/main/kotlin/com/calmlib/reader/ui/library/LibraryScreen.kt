@@ -75,6 +75,10 @@ fun LibraryScreen(
     val isConverting by viewModel.isConverting.collectAsStateWithLifecycle()
     val formatFilters by viewModel.formatFilters.collectAsStateWithLifecycle()
     val formatCounts by viewModel.formatCounts.collectAsStateWithLifecycle()
+    val todaysPick by viewModel.todaysPick.collectAsStateWithLifecycle()
+    val newArrivals by viewModel.newArrivals.collectAsStateWithLifecycle()
+    val myShelf by viewModel.myShelf.collectAsStateWithLifecycle()
+    val pinnedIds by viewModel.pinnedIds.collectAsStateWithLifecycle()
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
@@ -161,36 +165,38 @@ fun LibraryScreen(
             }
         }
 
-        // ── Count line ─────────────────────────────────────────────────────
-        val subtitle = when {
-            selectedCollection != null -> "${displayedBooks.size} book${plural(displayedBooks.size)} on this shelf"
-            totalBooks == 0 -> ""
-            else -> buildString {
-                append("$totalBooks book${plural(totalBooks)}")
-                formatTabs.forEach { f ->
-                    val n = formatCounts[f] ?: 0
-                    if (n > 0) append("  ·  $n $f")
-                }
-            }
-        }
+        // ── Epigraph ───────────────────────────────────────────────────────
+        // A line of the day under the title, like the quotation facing a
+        // book's first page. Counts live in the tabs below, where they belong.
+        val epigraph = remember { quoteForToday() }
         Row(
-            Modifier.padding(horizontal = PAGE_PADDING).padding(top = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            Modifier.padding(horizontal = PAGE_PADDING).padding(top = 4.dp),
+            verticalAlignment = Alignment.Top,
         ) {
             Text(
-                text = subtitle,
-                style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 12.sp, color = LightGrey),
+                text = if (selectedCollection != null)
+                    "${displayedBooks.size} book${plural(displayedBooks.size)} on this shelf"
+                else "“${epigraph.first}”  — ${epigraph.second}",
+                style = TextStyle(
+                    fontFamily = CalmFonts.serif,
+                    fontStyle = FontStyle.Italic,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
+                    color = Grey,
+                ),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
             if (selectedCollection != null) {
                 Text(
                     "← All books",
                     style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 12.sp, color = Ink),
-                    modifier = Modifier.clickable { viewModel.selectCollection(null) }.padding(vertical = 4.dp),
+                    modifier = Modifier.clickable { viewModel.selectCollection(null) }.padding(start = 12.dp, top = 2.dp),
                 )
             }
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(14.dp))
 
         // ── Tabs / selection bar ───────────────────────────────────────────
         if (selectionMode) {
@@ -211,10 +217,10 @@ fun LibraryScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = PAGE_PADDING),
                 verticalAlignment = Alignment.Bottom,
             ) {
-                FormatTab("All", activeFormat == null && formatFilters.isEmpty()) { viewModel.setFormatFilter(null) }
+                FormatTab("All", totalBooks, activeFormat == null && formatFilters.isEmpty()) { viewModel.setFormatFilter(null) }
                 formatTabs.forEach { f ->
-                    Spacer(Modifier.width(22.dp))
-                    FormatTab(f, activeFormat == f) { viewModel.setFormatFilter(f) }
+                    Spacer(Modifier.width(20.dp))
+                    FormatTab(f, formatCounts[f] ?: 0, activeFormat == f) { viewModel.setFormatFilter(f) }
                 }
                 Spacer(Modifier.weight(1f))
                 Text(
@@ -337,6 +343,10 @@ fun LibraryScreen(
                     books = displayedBooks,
                     currentlyReading = if (showCurrentlyReading) currentlyReading else emptyList(),
                     shelfLabel = shelfLabel,
+                    myShelf = if (showCurrentlyReading && activeFormat == null) myShelf else emptyList(),
+                    showShelfHint = showCurrentlyReading && activeFormat == null && myShelf.isEmpty(),
+                    todaysPick = if (showCurrentlyReading && activeFormat == null && !selectionMode) todaysPick else null,
+                    newArrivals = if (showCurrentlyReading && activeFormat == null && sortField != SortField.DATE_ADDED) newArrivals else emptyList(),
                     onBookClick = { book ->
                         if (selectionMode) {
                             selectedIds = if (book.id in selectedIds) selectedIds - book.id else selectedIds + book.id
@@ -360,6 +370,8 @@ fun LibraryScreen(
             collections = collections,
             onDismiss = { longPressBook = null },
             onOpen = { longPressBook = null; onBookClick(b) },
+            pinned = b.id in pinnedIds,
+            onTogglePin = { viewModel.togglePin(b); longPressBook = null },
             onMarkFinished = { viewModel.markBookFinished(b); longPressBook = null },
             onRemoveFromReading = { viewModel.removeFromCurrentlyReading(b); longPressBook = null },
             onDelete = { viewModel.deleteBook(b); longPressBook = null },
@@ -393,18 +405,27 @@ private fun HeaderWord(text: String, onClick: () -> Unit) {
 
 /** Kindle-style tab: the selected word is black with a firm underline. */
 @Composable
-private fun FormatTab(label: String, selected: Boolean, onClick: () -> Unit) {
-    Column(Modifier.clickable(onClick = onClick)) {
-        Text(
-            text = label,
-            style = TextStyle(
-                fontFamily = CalmFonts.sans,
-                fontSize = 14.sp,
-                letterSpacing = 0.3.sp,
-                color = if (selected) Ink else Grey,
-            ),
-            modifier = Modifier.padding(bottom = 6.dp),
-        )
+private fun FormatTab(label: String, count: Int, selected: Boolean, onClick: () -> Unit) {
+    Column(Modifier.width(IntrinsicSize.Max).clickable(onClick = onClick)) {
+        Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.Bottom) {
+            Text(
+                text = label,
+                style = TextStyle(
+                    fontFamily = CalmFonts.sans,
+                    fontSize = 14.sp,
+                    letterSpacing = 0.3.sp,
+                    color = if (selected) Ink else Grey,
+                ),
+            )
+            if (count > 0) {
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = count.toString(),
+                    style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 10.sp, color = if (selected) Grey else LightGrey),
+                    modifier = Modifier.padding(bottom = 1.dp),
+                )
+            }
+        }
         Box(Modifier.fillMaxWidth().height(2.dp).background(if (selected) Ink else Color.Transparent))
     }
 }
@@ -588,6 +609,8 @@ private fun BookActionSheet(
     collections: List<Collection>,
     onDismiss: () -> Unit,
     onOpen: () -> Unit,
+    pinned: Boolean,
+    onTogglePin: () -> Unit,
     onMarkFinished: () -> Unit,
     onRemoveFromReading: () -> Unit,
     onDelete: () -> Unit,
@@ -688,6 +711,7 @@ private fun BookActionSheet(
                 else -> {
                     val actions = listOfNotNull(
                         "Open" to onOpen,
+                        (if (pinned) "Take off my shelf" else "Pin to my shelf") to onTogglePin,
                         "Edit title or author…" to { editing = true },
                         if (!book.isCurrentlyReading || book.progress < 1f) "Mark as finished" to onMarkFinished else null,
                         if (book.isCurrentlyReading) "Take off Reading now" to onRemoveFromReading else null,
