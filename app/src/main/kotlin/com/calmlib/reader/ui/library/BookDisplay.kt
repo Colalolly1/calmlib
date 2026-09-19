@@ -8,7 +8,22 @@ import com.calmlib.reader.data.model.BookFormat
  * ("328186006-Secret-of-…", "1918__gewurz___hidden_treasures") are tidied for
  * display only — the stored title is untouched so search and rename keep working.
  */
-val Book.displayTitle: String get() = prettifyTitle(title)
+val Book.displayTitle: String
+    get() {
+        // Some EPUBs carry only an ISBN as their title; the file name is the
+        // better label then ("Dreamcatcher by Stephen King", not 9782226131904).
+        if (isbnLike.matches(title.trim())) {
+            val stem = java.io.File(filePath).nameWithoutExtension
+            if (stem.isNotBlank() && !isbnLike.matches(stem)) return prettifyTitle(stem)
+        }
+        return prettifyTitle(title)
+    }
+
+/** Author for display; "Unknown" placeholders from bad metadata are blank. */
+val Book.displayAuthor: String
+    get() = if (author.equals("unknown", ignoreCase = true) || author.equals("unknown author", ignoreCase = true)) "" else author
+
+private val isbnLike = Regex("""^(97[89])?\d{9}[\dXx]$""")
 
 /** Short format word for cover tags and counts. */
 val BookFormat.label: String get() = name
@@ -30,6 +45,8 @@ internal fun prettifyTitle(raw: String): String {
     t = t.replace(leadingId, "")
     t = t.replace(trailingJunk, "")
     if (!t.contains(' ')) t = t.replace('-', ' ')
+    // "AnatomyOfThePsyche" → "Anatomy Of The Psyche"
+    if (!t.contains(' ')) t = t.replace(Regex("""(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=\d)"""), " ")
     t = t.replace('_', ' ').replace(Regex("""\s+"""), " ").trim()
     if (t.isEmpty()) return raw.trim()
     if (t == t.lowercase() || t == t.uppercase()) {

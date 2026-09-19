@@ -649,7 +649,7 @@ private fun BookActionSheet(
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Text(book.displayTitle, style = CalmTypography.bookTitle.copy(fontSize = 16.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    val meta = listOf(book.author, book.format.label).filter { it.isNotEmpty() }.joinToString("  ·  ")
+                    val meta = listOf(book.displayAuthor, book.format.label).filter { it.isNotEmpty() }.joinToString("  ·  ")
                     Text(meta, style = CalmTypography.metadata.copy(fontSize = 12.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }

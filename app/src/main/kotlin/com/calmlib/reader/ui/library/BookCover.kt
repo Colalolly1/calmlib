@@ -127,9 +127,9 @@ fun BookCover(
 private fun FallbackCover(book: Book, modifier: Modifier = Modifier) {
     val title = book.displayTitle
     when (abs(title.hashCode()) % 3) {
-        0 -> BandedJacket(title, book.author, modifier)
-        1 -> FramedJacket(title, book.author, modifier)
-        else -> MonogramJacket(title, book.author, modifier)
+        0 -> BandedJacket(title, book.displayAuthor, modifier)
+        1 -> FramedJacket(title, book.displayAuthor, modifier)
+        else -> MonogramJacket(title, book.displayAuthor, modifier)
     }
 }
 

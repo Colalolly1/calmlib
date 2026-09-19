@@ -295,10 +295,10 @@ private fun TodaysPickCard(
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (book.author.isNotEmpty()) {
+                if (book.displayAuthor.isNotEmpty()) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = book.author,
+                        text = book.displayAuthor,
                         style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 12.sp, color = Color(0xFF555555)),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -443,10 +443,10 @@ private fun BookLabel(book: Book, width: Dp) {
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
         )
-        if (book.author.isNotEmpty()) {
+        if (book.displayAuthor.isNotEmpty()) {
             Spacer(Modifier.height(2.dp))
             Text(
-                text = book.author,
+                text = book.displayAuthor,
                 style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF6A6A6A)),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
