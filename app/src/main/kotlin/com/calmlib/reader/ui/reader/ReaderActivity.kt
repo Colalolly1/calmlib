@@ -22,6 +22,7 @@ import com.calmlib.reader.data.model.Highlight
 import com.calmlib.reader.data.model.ReadingSettings
 import com.calmlib.reader.data.model.VocabularyEntry
 import com.calmlib.reader.data.repository.BookRepository
+import com.calmlib.reader.data.repository.SettingsRepository
 import com.calmlib.reader.eink.EinkRefresh
 import com.calmlib.reader.engine.DictionaryEngine
 import com.calmlib.reader.engine.EpubParser
@@ -48,6 +49,7 @@ class ReaderActivity : ComponentActivity() {
     }
 
     private lateinit var bookRepo: BookRepository
+    private lateinit var settingsRepo: SettingsRepository
     private lateinit var dictEngine: DictionaryEngine
     private var webView: WebView? = null
     private var pdfView: PdfReaderView? = null
@@ -141,7 +143,10 @@ class ReaderActivity : ComponentActivity() {
     /** Multi-chapter formats show whole-book % next to the chapter-local page. */
     private fun isMultiChapter(): Boolean = !isPdf.value && totalChapters > 1
     private var sessionId: Long = 0
-    private var sessionStartPage: Int = 0
+    private var sessionStarting = false
+    /** Forward page turns in the open reading session — the "pages read" stat.
+     *  The in-chapter page index it replaced reset at every chapter. */
+    private var sessionPageTurns = 0
 
     private var currentPage = mutableIntStateOf(0)
     private var totalPages = mutableIntStateOf(1)
@@ -152,6 +157,8 @@ class ReaderActivity : ComponentActivity() {
     private var showHighlights = mutableStateOf(false)
     private var showDictionary = mutableStateOf(false)
     private var settings = mutableStateOf(ReadingSettings())
+    /** The stored defaults: what a book with no settings of its own opens with. */
+    private var defaultSettings = mutableStateOf(ReadingSettings())
     private var bookmarks = mutableStateOf<List<Bookmark>>(emptyList())
     private var highlights = mutableStateOf<List<Highlight>>(emptyList())
     private var dictResult = mutableStateOf<String?>(null)
@@ -165,7 +172,17 @@ class ReaderActivity : ComponentActivity() {
     private var isPdf = mutableStateOf(false)
 
     private var pendingSelection = mutableStateOf<String?>(null)
+    /** Chapter character offset where the pending selection starts (-1 unknown). */
+    @Volatile private var pendingSelectionOffset = -1
     private var showSelectionMenu = mutableStateOf(false)
+
+    /** Where the reader was before following a link in the book; drives the Back chip. */
+    private data class ReaderLocation(val chapter: Int, val page: Int, val charOffset: Int)
+    private var backTarget = mutableStateOf<ReaderLocation?>(null)
+
+    /** Set by the JS bridge when a tap followed a link; the tap-zone handler
+     *  stands down so the same tap doesn't also turn the page. */
+    @Volatile private var lastLinkTapMs = 0L
     private var fullscreenImageUrl = mutableStateOf<String?>(null)
 
     /**
@@ -212,16 +229,38 @@ class ReaderActivity : ComponentActivity() {
      * site, highlights added right after promotion would persist but never show
      * up in the overlays until the book was reopened.
      */
-    private fun startLibraryTracking(b: Book, startPage: Int) {
+    private fun startLibraryTracking(b: Book) {
         if (trackingStarted || b.id <= 0) return
         trackingStarted = true
-        sessionStartPage = startPage
-        lifecycleScope.launch {
-            sessionId = AppDatabase.get(this@ReaderActivity).statsDao()
-                .insert(com.calmlib.reader.data.model.ReadingSession(bookId = b.id, startTime = System.currentTimeMillis()))
-        }
+        startSession(b)
         lifecycleScope.launch { bookRepo.bookmarksForBook(b.id).collect { bookmarks.value = it } }
         lifecycleScope.launch { AppDatabase.get(this@ReaderActivity).highlightDao().forBook(b.id).collect { highlights.value = it } }
+    }
+
+    private fun startSession(b: Book) {
+        if (sessionId != 0L || sessionStarting) return
+        sessionStarting = true
+        sessionPageTurns = 0
+        lifecycleScope.launch {
+            try {
+                sessionId = AppDatabase.get(this@ReaderActivity).statsDao()
+                    .insert(com.calmlib.reader.data.model.ReadingSession(bookId = b.id, startTime = System.currentTimeMillis()))
+            } finally {
+                sessionStarting = false
+            }
+        }
+    }
+
+    /** Close the open session and forget it, so the next interaction opens a
+     *  fresh one instead of stretching this one over the time away. */
+    private fun endSession(endTime: Long) {
+        val sid = sessionId
+        if (sid <= 0) return
+        sessionId = 0
+        val pages = sessionPageTurns
+        sessionPageTurns = 0
+        val dao = AppDatabase.get(this).statsDao()
+        com.calmlib.reader.util.AppScope.io.launch { dao.endSession(sid, endTime, pages) }
     }
     private var avgPagesPerMinute = mutableStateOf(0f)
     private var isSpeaking = mutableStateOf(false)
@@ -236,6 +275,7 @@ class ReaderActivity : ComponentActivity() {
         enterFullscreen()
 
         bookRepo = BookRepository(this)
+        settingsRepo = SettingsRepository(this)
         dictEngine = DictionaryEngine.get(this)
         // Bundled WordNet is decompressed from assets to filesDir on first launch
         // (~30MB write). Must NOT block the main thread.
@@ -248,14 +288,18 @@ class ReaderActivity : ComponentActivity() {
         lifecycleScope.launch {
             // Settings are PER-BOOK (not global). They're loaded from the Book row
             // and only saved back to that row, so changes never bleed into another book.
-            // IMPORTANT: settings must be applied BEFORE loadBook so the initial render
-            // uses the correct font/spacing/etc — otherwise the WebView paints at default
-            // settings then re-paints when settings arrive, causing a visible flicker.
+            // A book with none of its own opens with the stored defaults.
+            // IMPORTANT: settings must be applied BEFORE loadBook — they are built
+            // into the document, so the first layout is the final one.
+            defaultSettings.value = try { settingsRepo.readingSettings.first() } catch (_: Exception) { ReadingSettings() }
             when {
                 bookId > 0 -> {
                     book = bookRepo.getBook(bookId)
                     book?.let {
-                        settings.value = ReadingSettings.fromJson(it.readingSettingsJson)
+                        settings.value = settingsFor(it)
+                        // Before the load, so this chapter's highlights are in
+                        // hand by the time it finishes.
+                        startLibraryTracking(it)
                         loadBook(it)
                     }
                 }
@@ -263,13 +307,11 @@ class ReaderActivity : ComponentActivity() {
                     book = bookRepo.getBook(bookId)
                     val b = book
                     if (b != null) {
-                        settings.value = ReadingSettings.fromJson(b.readingSettingsJson)
+                        settings.value = settingsFor(b)
+                        startLibraryTracking(b)
                         loadBook(b)
                     } else {
-                        val imported = importAndLoad(Uri.fromFile(File(filePath)))
-                        // importAndLoad has already called loadBook with default settings;
-                        // apply the imported book's settings now (will be defaults).
-                        imported?.let { settings.value = ReadingSettings.fromJson(it.readingSettingsJson) }
+                        importAndLoad(Uri.fromFile(File(filePath)))
                     }
                 }
                 intentUri != null -> {
@@ -279,7 +321,7 @@ class ReaderActivity : ComponentActivity() {
                         isGuest.value = true
                         guestSourceUri = intentUri
                         book = guest
-                        settings.value = ReadingSettings()
+                        settings.value = defaultSettings.value
                         loadBook(guest)
                     } else {
                         errorMessage.value = "Couldn't open that file. CalmLib reads EPUB, PDF, TXT and FB2."
@@ -291,7 +333,7 @@ class ReaderActivity : ComponentActivity() {
             // Persistence side-effects only for real library books (id > 0). Guest
             // previews get none — that's the point of a preview.
             book?.let { b ->
-                startLibraryTracking(b, startPage = b.currentPage)
+                startLibraryTracking(b)
                 // Reading speed for time-remaining estimates — fall back to ~30s/page if no history
                 val mins = AppDatabase.get(this@ReaderActivity).statsDao().totalMinutesRead().first().coerceAtLeast(1)
                 val pages = AppDatabase.get(this@ReaderActivity).statsDao().totalPagesRead().first()
@@ -340,28 +382,40 @@ class ReaderActivity : ComponentActivity() {
                             lifecycleScope.launch { bookRepo.saveReadingSettings(b.id, s.toJson()) }
                         }
                     },
+                    defaultSettings = defaultSettings.value,
+                    onSaveAsDefaults = { saveAsDefaults() },
                     onRefresh = { EinkRefresh.manualRefresh(this) },
                     onTocNavigate = { entry -> navigateToTocEntry(entry) },
                     onAddBookmark = {
                         persistableBook()?.let { b ->
+                            val charOffset = if (isPdf.value || !hasLiveContent) -1 else lastCharOffset
                             lifecycleScope.launch {
-                                bookRepo.addBookmark(b.id, currentPage.intValue, currentChapter, "Page ${currentPage.intValue + 1}")
+                                bookRepo.addBookmark(b.id, currentPage.intValue, currentChapter, "Page ${currentPage.intValue + 1}", charOffset)
                             }
                         }
                     },
                     onDeleteBookmark = { bm -> lifecycleScope.launch { bookRepo.deleteBookmark(bm) } },
-                    onBookmarkNavigate = { bm -> goToLocation(bm.chapter, bm.page) },
+                    onBookmarkNavigate = { bm -> goToLocation(bm.chapter, bm.page, bm.charOffset) },
                     onHighlightNavigate = { h ->
                         showHighlights.value = false
-                        goToLocation(h.chapter, h.page)
+                        // Highlights saved before offsets were recorded have 0..0.
+                        val charOffset = if (h.endOffset > h.startOffset) h.startOffset else -1
+                        goToLocation(h.chapter, h.page, charOffset)
                     },
                     onSearch = { query -> performSearch(query) },
                     onSearchNavigate = { page -> goToPage(page) },
                     onAddHighlight = { text, note ->
                         persistableBook()?.let { b ->
+                            // Typed in by hand: anchor it to the top of the page it was added on.
+                            val off = if (isPdf.value || !hasLiveContent) -1 else lastCharOffset
                             lifecycleScope.launch {
                                 AppDatabase.get(this@ReaderActivity).highlightDao().insert(
-                                    Highlight(bookId = b.id, chapter = currentChapter, page = currentPage.intValue, text = text, note = note)
+                                    Highlight(
+                                        bookId = b.id, chapter = currentChapter, page = currentPage.intValue,
+                                        text = text, note = note,
+                                        startOffset = off.coerceAtLeast(0),
+                                        endOffset = if (off >= 0) off + text.length else 0,
+                                    )
                                 )
                             }
                         }
@@ -388,16 +442,22 @@ class ReaderActivity : ComponentActivity() {
                     },
                     onSelectionHighlight = { text ->
                         showSelectionMenu.value = false
+                        val off = pendingSelectionOffset
                         persistableBook()?.let { b ->
                             lifecycleScope.launch {
                                 AppDatabase.get(this@ReaderActivity).highlightDao().insert(
-                                    Highlight(bookId = b.id, chapter = currentChapter, page = currentPage.intValue, text = text, note = "")
+                                    Highlight(
+                                        bookId = b.id, chapter = currentChapter, page = currentPage.intValue,
+                                        text = text, note = "",
+                                        startOffset = off.coerceAtLeast(0),
+                                        endOffset = if (off >= 0) off + text.length else 0,
+                                    )
                                 )
                             }
                         }
                         // Apply visual highlight on page now
-                        val esc = text.replace("\\", "\\\\").replace("'", "\\'")
-                        webView?.evaluateJavascript("CalmReader.markHighlight('$esc'); CalmReader.clearSelection();", null)
+                        val quoted = org.json.JSONObject.quote(text)
+                        webView?.evaluateJavascript("CalmReader.markHighlight($quoted, $off); CalmReader.clearSelection();", null)
                     },
                     onSelectionSearch = { text ->
                         showSelectionMenu.value = false
@@ -416,6 +476,15 @@ class ReaderActivity : ComponentActivity() {
                     onToggleTts = { toggleTts() },
                     isSpeaking = isSpeaking.value,
                     searchSnippets = searchSnippets.value,
+                    onMarginTap = { fx ->
+                        when {
+                            fx < 0.40f -> prevPage()
+                            fx > 0.60f -> nextPage()
+                            else -> showControls.value = !showControls.value
+                        }
+                    },
+                    showBackChip = backTarget.value != null,
+                    onBack = { goBack() },
                 )
             }
         }
@@ -439,15 +508,20 @@ class ReaderActivity : ComponentActivity() {
                 return true
             }
         }
+        // After following a link, Back returns to the page the link was on.
+        if (keyCode == KeyEvent.KEYCODE_BACK && backTarget.value != null) {
+            goBack()
+            return true
+        }
+        // A held volume key skips a chapter in onKeyLongPress only; handling
+        // isLongPress here as well skipped two.
         when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_DOWN -> {
                 event?.startTracking()
-                if (event?.isLongPress == true) { nextChapter(); return true }
                 return true
             }
             KeyEvent.KEYCODE_VOLUME_UP -> {
                 event?.startTracking()
-                if (event?.isLongPress == true) { prevChapter(); return true }
                 return true
             }
             KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_PAGE_DOWN -> { nextPage(); return true }
@@ -485,6 +559,7 @@ class ReaderActivity : ComponentActivity() {
             return
         }
         if (currentChapter < totalChapters - 1) {
+            backTarget.value = null
             currentChapter++
             loadSection(currentChapter)
         }
@@ -497,6 +572,7 @@ class ReaderActivity : ComponentActivity() {
             return
         }
         if (currentChapter > 0) {
+            backTarget.value = null
             currentChapter--
             loadSection(currentChapter)
         }
@@ -552,14 +628,7 @@ class ReaderActivity : ComponentActivity() {
                 if (isFinishing || isDestroyed) return
                 val now = System.currentTimeMillis()
                 if (now - lastInteractionTs.value > 120_000 && sessionId > 0) {
-                    val sid = sessionId
-                    sessionId = 0
-                    val pagesRead = (currentPage.intValue - sessionStartPage).coerceAtLeast(0)
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        AppDatabase.get(this@ReaderActivity).statsDao()
-                            .endSession(sid, lastInteractionTs.value, pagesRead)
-                    }
-                    sessionStartPage = currentPage.intValue
+                    endSession(lastInteractionTs.value)
                 }
                 handler.postDelayed(this, 30_000)
             }
@@ -570,14 +639,7 @@ class ReaderActivity : ComponentActivity() {
 
     private fun bumpInteraction() {
         lastInteractionTs.value = System.currentTimeMillis()
-        if (sessionId == 0L) {
-            val b = persistableBook() ?: return
-            lifecycleScope.launch(Dispatchers.IO) {
-                sessionId = AppDatabase.get(this@ReaderActivity).statsDao()
-                    .insert(com.calmlib.reader.data.model.ReadingSession(bookId = b.id, startTime = System.currentTimeMillis()))
-                sessionStartPage = currentPage.intValue
-            }
-        }
+        persistableBook()?.let { startSession(it) }
     }
 
     private fun toggleTts() {
@@ -713,12 +775,8 @@ class ReaderActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         saveProgress()
-        if (sessionId > 0) {
-            val pagesRead = (currentPage.intValue - sessionStartPage).coerceAtLeast(0)
-            lifecycleScope.launch {
-                AppDatabase.get(this@ReaderActivity).statsDao().endSession(sessionId, System.currentTimeMillis(), pagesRead)
-            }
-        }
+        // The next page turn after coming back opens a new session.
+        endSession(System.currentTimeMillis())
     }
 
     override fun onDestroy() {
@@ -764,33 +822,84 @@ class ReaderActivity : ComponentActivity() {
      * for FB2 (epubParser is null), which used to strand FB2 readers at the end
      * of a section — page turns just stopped working.
      */
-    private fun loadSection(index: Int, goToEnd: Boolean = false, initialPage: Int = 0) {
+    private fun loadSection(
+        index: Int,
+        goToEnd: Boolean = false,
+        initialPage: Int = 0,
+        initialCharOffset: Float = 0f,
+        anchor: String? = null,
+    ) {
         if (epubParser != null) {
-            loadChapter(index, goToEnd = goToEnd, initialPage = initialPage)
+            loadChapter(index, goToEnd = goToEnd, initialPage = initialPage, initialCharOffset = initialCharOffset, anchor = anchor)
             return
         }
         val fb2 = fb2Parser ?: return
         if (index !in 0 until fb2.sectionCount()) return
-        loadHtmlContent(fb2.sectionHtml(index), initialPage)
+        loadHtmlContent(fb2.sectionHtml(index), initialPage, initialCharOffset)
         // Consumed from onPageFinished, so it survives watchdog retries.
         pendingGoToEnd = goToEnd
     }
 
     /**
-     * Jump to a stored (chapter, page) location — used by bookmarks and
-     * highlights. Bookmark navigation used to pass only the page, which landed
-     * on the wrong text whenever the bookmark lived in a different chapter.
+     * Jump to a stored location — bookmarks, highlights, the link Back chip.
+     * A character offset (>= 0) is exact under any font size or margin; the
+     * page index is only the fallback for entries saved before offsets were
+     * recorded, and the real position for PDFs.
      */
-    private fun goToLocation(chapter: Int, page: Int) {
+    private fun goToLocation(chapter: Int, page: Int, charOffset: Int = -1) {
+        backTarget.value = null
         if (isPdf.value) {
             goToPage(page)
             return
         }
+        val useChar = charOffset >= 0
         if (chapter != currentChapter) {
             currentChapter = chapter.coerceIn(0, (totalChapters - 1).coerceAtLeast(0))
-            loadSection(currentChapter, initialPage = page)
+            if (useChar) loadSection(currentChapter, initialCharOffset = charOffset.toFloat())
+            else loadSection(currentChapter, initialPage = page)
+        } else if (useChar) {
+            webView?.evaluateJavascript("CalmReader.goToCharOffset($charOffset)", null)
         } else {
             goToPage(page)
+        }
+    }
+
+    /** Back chip / Back key after following a link: return to where the link was. */
+    private fun goBack() {
+        val t = backTarget.value ?: return
+        goToLocation(t.chapter, t.page, t.charOffset)
+    }
+
+    /**
+     * A tapped link inside the book. [path] is the target file (empty for a
+     * link within this chapter), [anchor] the fragment id. Links to the start
+     * of a chapter have no anchor.
+     */
+    private fun followInternalLink(path: String, anchor: String) {
+        if (isPdf.value || !hasLiveContent) return
+        val target = if (path.isEmpty()) currentChapter else chapterIndexForPath(path) ?: return
+        backTarget.value = ReaderLocation(currentChapter, currentPage.intValue, lastCharOffset)
+        if (target == currentChapter) {
+            if (anchor.isEmpty()) goToPage(0)
+            else webView?.evaluateJavascript("CalmReader.goToAnchor(${org.json.JSONObject.quote(anchor)})") { r ->
+                // No such anchor here: nothing moved, so there is nothing to go back to.
+                if (jsReturnedFalse(r)) runOnUiThread { backTarget.value = null }
+            }
+        } else {
+            currentChapter = target
+            loadSection(target, anchor = anchor.ifEmpty { null })
+        }
+    }
+
+    /** Spine index of the extracted chapter file at [path], or null. */
+    private fun chapterIndexForPath(path: String): Int? {
+        val parser = epubParser ?: return null
+        val dir = epubDir ?: return null
+        val wanted = try { File(path).canonicalPath } catch (_: Exception) { return null }
+        return parser.chapters.indices.firstOrNull { i ->
+            val href = parser.chapters[i].href
+            val f = findChapterFile(dir, parser.contentDir + href) ?: findChapterFile(dir, href)
+            f != null && (try { f.canonicalPath } catch (_: Exception) { f.absolutePath }) == wanted
         }
     }
 
@@ -798,13 +907,20 @@ class ReaderActivity : ComponentActivity() {
         if (pageTurnDebounced()) return
         bumpInteraction()
         if (isPdf.value) {
-            pdfView?.nextPage()
+            val view = pdfView
+            val before = view?.currentPage
+            view?.nextPage()
+            if (view != null && view.currentPage != before) sessionPageTurns++
             EinkRefresh.onPageTurn(this, settings.value.autoRefreshInterval)
         } else {
             webView?.evaluateJavascript("CalmReader.nextPage()") { result ->
                 runOnUiThread {
-                    if (jsReturnedFalse(result) && currentChapter < totalChapters - 1) {
+                    if (!jsReturnedFalse(result)) {
+                        sessionPageTurns++
+                    } else if (currentChapter < totalChapters - 1) {
                         android.util.Log.d("CalmNav", "chapter-advance next: $currentChapter -> ${currentChapter + 1} (js=$result)")
+                        backTarget.value = null
+                        sessionPageTurns++
                         currentChapter++
                         loadSection(currentChapter, goToEnd = false)
                     }
@@ -824,6 +940,7 @@ class ReaderActivity : ComponentActivity() {
             webView?.evaluateJavascript("CalmReader.prevPage()") { result ->
                 runOnUiThread {
                     if (jsReturnedFalse(result) && currentChapter > 0) {
+                        backTarget.value = null
                         currentChapter--
                         loadSection(currentChapter, goToEnd = true)
                     }
@@ -927,10 +1044,24 @@ class ReaderActivity : ComponentActivity() {
         startActivity(Intent.createChooser(intent, "Export highlights"))
     }
 
+    /** A book's own saved settings, or the stored defaults when it has none. */
+    private fun settingsFor(b: Book): ReadingSettings =
+        if (b.readingSettingsJson.isNullOrBlank()) defaultSettings.value
+        else ReadingSettings.fromJson(b.readingSettingsJson)
+
+    /** "Use for new books": the current settings become the stored defaults. */
+    private fun saveAsDefaults() {
+        val s = settings.value
+        defaultSettings.value = s
+        lifecycleScope.launch { settingsRepo.updateReadingSettings(s) }
+    }
+
     private suspend fun importAndLoad(uri: Uri): Book? {
         val imported = bookRepo.importBook(uri)
         if (imported != null) {
             book = imported
+            settings.value = settingsFor(imported)
+            startLibraryTracking(imported)
             loadBook(imported)
         } else {
             errorMessage.value = "This file could not be opened"
@@ -998,7 +1129,7 @@ class ReaderActivity : ComponentActivity() {
                     imported.lastRead > 0 || imported.currentPage > 0 || imported.bookProgress > 0f
                 book = imported
                 isGuest.value = false
-                startLibraryTracking(imported, startPage = currentPage.intValue)
+                startLibraryTracking(imported)
                 if (!hasExistingProgress) {
                     // Fresh import: carry the preview position forward.
                     saveProgress()
@@ -1088,18 +1219,40 @@ class ReaderActivity : ComponentActivity() {
     private var pendingGoToEnd = false
     private var pendingRestoreChar = 0f
     private var pendingRestorePage = 0
+    /** Element id to open the chapter at (contents entry, followed link). */
+    private var pendingAnchor: String? = null
 
     private fun consumePendingRestore(wv: WebView) {
+        val anchor = pendingAnchor
         when {
             pendingGoToEnd -> wv.evaluateJavascript("CalmReader.goToEndOfChapter()", null)
+            anchor != null ->
+                wv.evaluateJavascript("CalmReader.goToAnchor(${org.json.JSONObject.quote(anchor)})", null)
             pendingRestoreChar > 0f ->
                 wv.evaluateJavascript("CalmReader.goToCharOffset(${pendingRestoreChar.toInt()})", null)
             pendingRestorePage > 0 ->
                 wv.evaluateJavascript("CalmReader.goToPage($pendingRestorePage)", null)
         }
         pendingGoToEnd = false
+        pendingAnchor = null
         pendingRestoreChar = 0f
         pendingRestorePage = 0
+    }
+
+    /** Underline this chapter's saved highlights. Marking never changes the
+     *  layout (see .highlight in reader.css), so order against the restore
+     *  doesn't matter. */
+    private fun applyChapterHighlights(wv: WebView) {
+        val forChapter = highlights.value.filter { it.chapter == currentChapter }
+        if (forChapter.isEmpty()) return
+        val arr = org.json.JSONArray()
+        forChapter.forEach { h ->
+            arr.put(org.json.JSONObject().apply {
+                put("text", h.text)
+                put("offset", if (h.endOffset > h.startOffset) h.startOffset else -1)
+            })
+        }
+        wv.evaluateJavascript("CalmReader.applyAllHighlights(${org.json.JSONObject.quote(arr.toString())})", null)
     }
 
     /**
@@ -1126,21 +1279,39 @@ class ReaderActivity : ComponentActivity() {
         window.decorView.postDelayed({ withWebView(attempts - 1, block) }, 50)
     }
 
+    /**
+     * Head injection for every chapter document: reader.css, the reader's
+     * settings as CalmInitial, then reader.js — which turns CalmInitial into
+     * the override stylesheet while the document is still parsing. So the
+     * first layout already has the final size, spacing, margins and classes,
+     * and a saved position restores against the page grid the reader sees.
+     * (Restoring first and styling after reflowed the chapter under the
+     * restored page: reopening landed pages early.)
+     */
+    private fun readerHead(s: ReadingSettings): String {
+        val font = org.json.JSONObject.quote(fontFamilyCss(s.fontFamily))
+        // Numbers are written exactly as applySettings writes them, so the
+        // pipeline's setStyle sees the same signature and changes nothing.
+        val initial = "{fontSize: ${s.fontSize}, lineSpacing: ${s.lineSpacing}, " +
+            "marginH: ${s.marginHorizontal}, marginV: ${s.marginVertical}, fontFamily: $font, " +
+            "contrastBoost: ${s.contrastBoost}, boldMode: ${s.boldMode}, noAntialias: ${!s.antiAliasing}, " +
+            "justify: ${s.justify}, hyphenation: ${s.hyphenation}, bionic: ${s.bionicReading}}"
+        return "<link rel=\"stylesheet\" href=\"file:///android_asset/reader/reader.css\" />\n" +
+            "<script>var CalmInitial = $initial;</script>\n" +
+            "<script src=\"file:///android_asset/reader/reader.js\"></script>\n"
+    }
+
     private fun loadHtmlContent(html: String, initialPage: Int = 0, initialCharOffset: Float = 0f) {
         val s = settings.value
-        val fontCss = fontFamilyCss(s.fontFamily)
         val safeHtml = sanitizeBookHtml(html)   // FB2/TXT bodies are untrusted too
         val fullHtml = """<!DOCTYPE html><html><head><meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-            <link rel="stylesheet" href="file:///android_asset/reader/reader.css" />
-            <script src="file:///android_asset/reader/reader.js"></script>
-            <style>body { font-size: ${s.fontSize}px; line-height: ${s.lineSpacing};
-                padding: ${s.marginVertical}px ${s.marginHorizontal}px; font-family: $fontCss; }</style>
-            </head><body class="paginated">$safeHtml</body></html>""".trimIndent()
+            ${readerHead(s)}</head><body class="paginated">$safeHtml</body></html>""".trimIndent()
         val gen = ++loadGeneration
         lastCharOffset = -1   // stale offsets must not leak across section loads
         hasLiveContent = false
         pendingGoToEnd = false
+        pendingAnchor = null
         pendingRestoreChar = initialCharOffset
         pendingRestorePage = initialPage
         withWebView { wv ->
@@ -1310,15 +1481,21 @@ class ReaderActivity : ComponentActivity() {
         }
     }
 
-    private fun loadChapter(index: Int, goToEnd: Boolean = false, initialPage: Int = 0, initialCharOffset: Float = 0f) {
-        try { loadChapterInner(index, goToEnd, initialPage, initialCharOffset) }
+    private fun loadChapter(
+        index: Int,
+        goToEnd: Boolean = false,
+        initialPage: Int = 0,
+        initialCharOffset: Float = 0f,
+        anchor: String? = null,
+    ) {
+        try { loadChapterInner(index, goToEnd, initialPage, initialCharOffset, anchor) }
         catch (t: Throwable) {
             android.util.Log.d("CalmNav", "loadChapter THREW: ${t.javaClass.name}: ${t.message}")
             errorMessage.value = "Couldn't render this chapter (${t.javaClass.simpleName})."
         }
     }
 
-    private fun loadChapterInner(index: Int, goToEnd: Boolean, initialPage: Int, initialCharOffset: Float) {
+    private fun loadChapterInner(index: Int, goToEnd: Boolean, initialPage: Int, initialCharOffset: Float, anchor: String?) {
         val parser = epubParser ?: return
         val dir = epubDir ?: return
         if (parser.chapters.isEmpty()) {
@@ -1340,8 +1517,6 @@ class ReaderActivity : ComponentActivity() {
         val chapterFile = findChapterFile(dir, parser.contentDir + chapter.href)
             ?: findChapterFile(dir, chapter.href)
         val baseUrl = "file://${chapterFile?.parentFile?.absolutePath ?: dir.absolutePath}/"
-        val cssPath = "file:///android_asset/reader/reader.css"
-        val jsPath = "file:///android_asset/reader/reader.js"
 
         val chapterContent = sanitizeBookHtml(
             try {
@@ -1351,21 +1526,7 @@ class ReaderActivity : ComponentActivity() {
             }
         )
 
-        val s = settings.value
-        val fontCss = fontFamilyCss(s.fontFamily)
-
-        val styleBlock = """
-            <style>
-                body {
-                    font-size: ${s.fontSize}px;
-                    line-height: ${s.lineSpacing};
-                    padding: ${s.marginVertical}px ${s.marginHorizontal}px;
-                    font-family: $fontCss;
-                }
-            </style>
-        """.trimIndent()
-
-        val injection = "<link rel=\"stylesheet\" href=\"$cssPath\" />\n<script src=\"$jsPath\"></script>\n$styleBlock\n"
+        val injection = readerHead(settings.value)
         val headEnd = chapterContent.indexOf("</head>", ignoreCase = true)
         val bodyStart = chapterContent.indexOf("<body", ignoreCase = true)
         val styled = when {
@@ -1387,6 +1548,7 @@ class ReaderActivity : ComponentActivity() {
         lastCharOffset = -1   // stale offsets must not leak across chapter loads
         hasLiveContent = false
         pendingGoToEnd = goToEnd
+        pendingAnchor = anchor
         pendingRestoreChar = initialCharOffset
         pendingRestorePage = initialPage
 
@@ -1546,26 +1708,24 @@ class ReaderActivity : ComponentActivity() {
         }
     }
 
-    private fun applyDisplayClasses(s: ReadingSettings) {
-        val classes = buildList {
-            if (s.contrastBoost) add("contrast-boost")
-            if (s.boldMode) add("bold-mode")
-            if (!s.antiAliasing) add("no-antialias")
-        }
-        classes.forEach { cls ->
-            webView?.evaluateJavascript("document.body.classList.add('$cls')", null)
-        }
-    }
-
     private fun navigateToTocEntry(entry: com.calmlib.reader.engine.TocEntry) {
         showToc.value = false
+        backTarget.value = null
         val parser = epubParser
         if (parser != null) {
+            // Entries like "ch3.xhtml#sec2" point INTO a chapter: open the
+            // chapter, then go to the anchor, not just the chapter's start.
             val href = entry.href.substringBefore("#")
-            val chapterIndex = parser.chapters.indexOfFirst { it.href == href || it.href.endsWith(href) }
-            if (chapterIndex in parser.chapters.indices) {
+            val anchor = entry.href.substringAfter("#", "").ifEmpty { null }
+            val chapterIndex = if (href.isEmpty()) currentChapter
+                else parser.chapters.indexOfFirst { it.href == href || it.href.endsWith(href) }
+            if (chapterIndex !in parser.chapters.indices) return
+            if (chapterIndex == currentChapter && hasLiveContent) {
+                if (anchor != null) webView?.evaluateJavascript("CalmReader.goToAnchor(${org.json.JSONObject.quote(anchor)})", null)
+                else goToPage(0)
+            } else {
                 currentChapter = chapterIndex
-                loadChapter(chapterIndex)
+                loadChapter(chapterIndex, anchor = anchor)
             }
             return
         }
@@ -1653,13 +1813,23 @@ class ReaderActivity : ComponentActivity() {
                 }
 
                 @JavascriptInterface
-                fun onTextSelected(text: String) {
+                fun onTextSelected(text: String, charOffset: Int) {
                     val cleaned = text.trim()
                     if (cleaned.length < 2) return
                     runOnUiThread {
+                        pendingSelectionOffset = charOffset
                         pendingSelection.value = cleaned
                         showSelectionMenu.value = true
                     }
+                }
+
+                @JavascriptInterface
+                fun onLinkTapped(path: String, anchor: String) {
+                    // Stamp before hopping threads, like onImageTapped: the
+                    // pending tap-zone runnable must see it and stand down.
+                    lastLinkTapMs = System.currentTimeMillis()
+                    android.util.Log.d("CalmNav", "onLinkTapped path=$path anchor=$anchor")
+                    runOnUiThread { followInternalLink(path, anchor) }
                 }
 
                 @JavascriptInterface
@@ -1739,12 +1909,13 @@ class ReaderActivity : ComponentActivity() {
                     if (finishedGen != loadGeneration) return
                     val gen = loadGeneration
                     wv.evaluateJavascript("CalmReader.init()", null)
-                    // After init runs, push the current settings — beats any race where
-                    // the panel applied them before reader.js was loaded.
+                    // The document was built with the current settings, so this
+                    // applySettings is a no-op unless they changed while it
+                    // loaded (then it anchors like any live change).
                     wv.postDelayed({
                         if (gen != loadGeneration) return@postDelayed
-                        applyDisplayClasses(this@ReaderActivity.settings.value)
                         applySettings(this@ReaderActivity.settings.value)
+                        applyChapterHighlights(wv)
                         consumePendingRestore(wv)
                     }, 200)
                     // Liveness probe: "finished" is not "working". Rapid re-issues
@@ -1809,6 +1980,8 @@ class ReaderActivity : ComponentActivity() {
                     // is invisible next to the E-Ink refresh itself.
                     postDelayed({
                         if (fullscreenImageUrl.value != null) return@postDelayed
+                        // A followed link already acted on this tap, in any zone.
+                        if (System.currentTimeMillis() - lastLinkTapMs < 450) return@postDelayed
                         val inTurnZone = x < w * 0.40f || x > w * 0.60f
                         // Stand down for an image tap ONLY in the centre band.
                         // Deferring in the turn zones made full-page pictures

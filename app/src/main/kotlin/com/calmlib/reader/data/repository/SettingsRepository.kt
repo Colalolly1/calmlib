@@ -38,20 +38,23 @@ class SettingsRepository(context: Context) {
         val ignoredScanPaths = stringSetPreferencesKey("ignored_scan_paths")
     }
 
+    /** Defaults for books with no settings of their own: what "Use for new
+     *  books" saved, else the built-in defaults. PDF zoom and trim stay per book. */
     val readingSettings: Flow<ReadingSettings> = store.data.map { prefs ->
+        val d = ReadingSettings()
         ReadingSettings(
-            fontSize = prefs[Keys.fontSize] ?: 18f,
-            lineSpacing = prefs[Keys.lineSpacing] ?: 1.6f,
-            marginHorizontal = prefs[Keys.marginH] ?: 24,
-            marginVertical = prefs[Keys.marginV] ?: 16,
-            fontFamily = prefs[Keys.fontFamily] ?: "literata",
-            contrastBoost = prefs[Keys.contrastBoost] ?: false,
-            boldMode = prefs[Keys.boldMode] ?: false,
-            antiAliasing = prefs[Keys.antiAliasing] ?: true,
-            autoRefreshInterval = prefs[Keys.autoRefresh] ?: 1,   // every page by default
-            justify = prefs[Keys.justify] ?: true,
-            hyphenation = prefs[Keys.hyphenation] ?: true,
-            bionicReading = prefs[Keys.bionic] ?: false,
+            fontSize = prefs[Keys.fontSize] ?: d.fontSize,
+            lineSpacing = prefs[Keys.lineSpacing] ?: d.lineSpacing,
+            marginHorizontal = prefs[Keys.marginH] ?: d.marginHorizontal,
+            marginVertical = prefs[Keys.marginV] ?: d.marginVertical,
+            fontFamily = prefs[Keys.fontFamily] ?: d.fontFamily,
+            contrastBoost = prefs[Keys.contrastBoost] ?: d.contrastBoost,
+            boldMode = prefs[Keys.boldMode] ?: d.boldMode,
+            antiAliasing = prefs[Keys.antiAliasing] ?: d.antiAliasing,
+            autoRefreshInterval = prefs[Keys.autoRefresh] ?: d.autoRefreshInterval,
+            justify = prefs[Keys.justify] ?: d.justify,
+            hyphenation = prefs[Keys.hyphenation] ?: d.hyphenation,
+            bionicReading = prefs[Keys.bionic] ?: d.bionicReading,
         )
     }
 

@@ -5,6 +5,7 @@ import android.webkit.WebView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,9 +17,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -29,6 +32,24 @@ import com.calmlib.reader.data.model.ReadingSettings
 import com.calmlib.reader.engine.TocEntry
 import com.calmlib.reader.ui.theme.CalmFonts
 import com.calmlib.reader.ui.theme.CalmTypography
+
+/** Height of the page-number footer, and so of the WebView's bottom padding. */
+private val ReaderFooterHeight = 30.dp
+
+/** A strip outside the WebView (top margin, footer) that routes taps to the
+ *  same left / middle / right zones as the page itself. */
+@Composable
+private fun MarginTapStrip(modifier: Modifier, height: Dp, onTap: (fractionX: Float) -> Unit) {
+    if (height <= 0.dp) return
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(height)
+            .pointerInput(onTap) {
+                detectTapGestures { o -> onTap(o.x / size.width.coerceAtLeast(1)) }
+            },
+    )
+}
 
 @Composable
 fun ReaderScreenFull(
@@ -90,7 +111,13 @@ fun ReaderScreenFull(
     isGuestPreview: Boolean = false,
     onAddToLibrary: () -> Unit = {},
     webViewEpoch: Int = 0,
+    defaultSettings: ReadingSettings = ReadingSettings(),
+    onSaveAsDefaults: () -> Unit = {},
+    onMarginTap: (fractionX: Float) -> Unit = {},
+    showBackChip: Boolean = false,
+    onBack: () -> Unit = {},
 ) {
+    val anyOverlay = showControls || showToc || showBookmarks || showSearch || showHighlights || showDictionary || fullscreenImageUrl != null
     Box(modifier = Modifier.fillMaxSize().background(Color.White)) {
         if (errorMessage != null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -108,15 +135,26 @@ fun ReaderScreenFull(
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
+            // The page sits between the vertical margin and the footer: padding
+            // the WebView itself (not the HTML body) puts the margin on every
+            // page and keeps the last line clear of "12 of 35 · 40%". Both are
+            // constant while reading, so overlays never resize the page.
+            val topMargin = settings.marginVertical.coerceAtLeast(0).dp
             // Keyed on the epoch: when the activity replaces a WebView whose
             // renderer process died, bumping the epoch disposes this AndroidView
             // and runs the factory again with a fresh WebView.
             androidx.compose.runtime.key(webViewEpoch) {
-                AndroidView(factory = webViewFactory, modifier = Modifier.fillMaxSize())
+                AndroidView(
+                    factory = webViewFactory,
+                    modifier = Modifier.fillMaxSize().padding(top = topMargin, bottom = ReaderFooterHeight),
+                )
+            }
+            // Taps on the margin strips outside the WebView still turn pages.
+            if (!anyOverlay) {
+                MarginTapStrip(Modifier.align(Alignment.TopCenter), topMargin, onMarginTap)
+                MarginTapStrip(Modifier.align(Alignment.BottomCenter), ReaderFooterHeight, onMarginTap)
             }
         }
-
-        val anyOverlay = showControls || showToc || showBookmarks || showSearch || showHighlights || showDictionary || fullscreenImageUrl != null
 
         // Guest-preview banner: this file is being READ, not imported. One tap
         // adds it to the library; otherwise it vanishes without a trace.
@@ -166,12 +204,14 @@ fun ReaderScreenFull(
             }
         }
 
-        // Minimal footer
+        // Minimal footer, fixed height: the WebView's bottom padding matches it.
         if (!anyOverlay && errorMessage == null) {
             Row(
                 modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                    .height(ReaderFooterHeight)
+                    .padding(horizontal = 20.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 // Left: chapter-local page, plus whole-book percentage for
                 // multi-chapter books (EPUB/FB2). For PDFs/TXT the pages ARE the book.
@@ -195,6 +235,23 @@ fun ReaderScreenFull(
                     }
                     Text(label, style = CalmTypography.metadata.copy(fontSize = 10.sp))
                 }
+            }
+        }
+
+        // After following a link in the book: one tap returns to where you were.
+        // Bottom centre is the controls zone, so it never blocks a page turn.
+        if (showBackChip && !anyOverlay && errorMessage == null) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 4.dp)
+                    .sizeIn(minWidth = 96.dp, minHeight = 48.dp)
+                    .background(Color.Black)
+                    .clickable(onClick = onBack)
+                    .padding(horizontal = 20.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Back", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 14.sp))
             }
         }
 
@@ -234,6 +291,8 @@ fun ReaderScreenFull(
                 ) {
                     ControlsOverlay(
                         settings = settings,
+                        defaultSettings = defaultSettings,
+                        onSaveAsDefaults = onSaveAsDefaults,
                         onSettingsChanged = onSettingsChanged,
                         onRefresh = onRefresh,
                         onToc = onToggleToc,
@@ -367,7 +426,7 @@ private fun SelectionActionSheet(
                     .padding(vertical = 12.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("Cancel", style = CalmTypography.controlLabel.copy(color = Color(0xFF999999)))
+                Text("Cancel", style = CalmTypography.controlLabel.copy(color = Color(0xFF666666)))
             }
         }
     }
@@ -396,6 +455,8 @@ private fun ActionButton(label: String, onClick: () -> Unit, modifier: Modifier 
 @Composable
 private fun ControlsOverlay(
     settings: ReadingSettings,
+    defaultSettings: ReadingSettings,
+    onSaveAsDefaults: () -> Unit,
     onSettingsChanged: (ReadingSettings) -> Unit,
     onRefresh: () -> Unit,
     onToc: () -> Unit,
@@ -422,9 +483,11 @@ private fun ControlsOverlay(
                 Text("Reading", style = CalmTypography.libraryTitle.copy(fontSize = 20.sp))
                 Box(
                     Modifier
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                         .background(Color.Black)
                         .clickable { onDismiss() }
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
                     Text("Done", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 14.sp))
                 }
@@ -463,7 +526,8 @@ private fun ControlsOverlay(
                         onToc, onBookmarks, onSearch, onHighlights, onToggleTts, isSpeaking, onRefresh,
                         isGuestPreview, onAddToLibrary,
                     )
-                    1 -> if (isPdf) pdfTabContent(settings, onSettingsChanged) else typeTabContent(settings, onSettingsChanged)
+                    1 -> if (isPdf) pdfTabContent(settings, onSettingsChanged)
+                        else typeTabContent(settings, defaultSettings, onSettingsChanged, onSaveAsDefaults)
                     else -> screenTabContent(settings, onSettingsChanged, onRefresh)
                 }
             }
@@ -573,7 +637,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.pdfTabContent(
 
 private fun androidx.compose.foundation.lazy.LazyListScope.typeTabContent(
     settings: ReadingSettings,
+    defaultSettings: ReadingSettings,
     onSettingsChanged: (ReadingSettings) -> Unit,
+    onSaveAsDefaults: () -> Unit,
 ) {
     // Text size
     item {
@@ -705,13 +771,32 @@ private fun androidx.compose.foundation.lazy.LazyListScope.typeTabContent(
         ToggleRow("Bionic reading (bold first half)", settings.bionicReading) { onSettingsChanged(settings.copy(bionicReading = it)) }; Divider()
         Spacer(Modifier.height(20.dp))
     }
-    // Reset
+    // Defaults: save these for books opened for the first time, or go back to them.
     item {
+        // PDF zoom and trim are per book and never part of the defaults.
+        val isDefault = settings.copy(pdfZoom = 1f, pdfTrimMargins = false) ==
+            defaultSettings.copy(pdfZoom = 1f, pdfTrimMargins = false)
         Box(
             Modifier
                 .fillMaxWidth()
                 .background(Color(0xFFF8F8F8))
-                .clickable { onSettingsChanged(ReadingSettings()) }
+                .clickable(enabled = !isDefault) { onSaveAsDefaults() }
+                .padding(vertical = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (isDefault) "These are the settings for new books" else "Use for new books",
+                style = CalmTypography.controlLabel.copy(color = if (isDefault) Color(0xFF666666) else Color.Black),
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFF8F8F8))
+                .clickable {
+                    onSettingsChanged(defaultSettings.copy(pdfZoom = settings.pdfZoom, pdfTrimMargins = settings.pdfTrimMargins))
+                }
                 .padding(vertical = 14.dp),
             contentAlignment = Alignment.Center,
         ) {
@@ -821,7 +906,7 @@ private fun SearchOverlay(
     Column(Modifier.fillMaxSize().background(Color.White).padding(20.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Search", style = CalmTypography.libraryTitle.copy(fontSize = 22.sp))
-            Text("Done", style = CalmTypography.controlLabel, modifier = Modifier.clickable { onDismiss() })
+            TextAction("Done") { onDismiss() }
         }
         Spacer(Modifier.height(16.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -832,8 +917,8 @@ private fun SearchOverlay(
                 modifier = Modifier.weight(1f),
                 decorationBox = { inner -> Box { if (query.isEmpty()) Text("Search text...", style = CalmTypography.controlValue); inner() } },
             )
-            Spacer(Modifier.width(12.dp))
-            Text("Find", style = CalmTypography.controlLabel, modifier = Modifier.clickable { onSearch(query) })
+            Spacer(Modifier.width(4.dp))
+            TextAction("Find") { onSearch(query) }
         }
         Spacer(Modifier.height(4.dp)); Divider(); Spacer(Modifier.height(12.dp))
 
@@ -870,13 +955,15 @@ private fun HighlightsOverlay(
 ) {
     var newText by remember { mutableStateOf("") }
     var newNote by remember { mutableStateOf("") }
+    // Remove asks first: one stray tap on e-ink shouldn't lose a highlight.
+    var confirmRemove by remember { mutableStateOf<Long?>(null) }
 
     Column(Modifier.fillMaxSize().background(Color.White).padding(20.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Highlights", style = CalmTypography.libraryTitle.copy(fontSize = 22.sp))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                if (highlights.isNotEmpty()) Text("Export", style = CalmTypography.controlLabel, modifier = Modifier.clickable { onExport() })
-                Text("Done", style = CalmTypography.controlLabel, modifier = Modifier.clickable { onDismiss() })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (highlights.isNotEmpty()) TextAction("Export") { onExport() }
+                TextAction("Done") { onDismiss() }
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -921,13 +1008,26 @@ private fun HighlightsOverlay(
                         if (h.note.isNotEmpty()) {
                             Text(h.note, style = CalmTypography.metadata.copy(fontSize = 12.sp), modifier = Modifier.padding(top = 2.dp))
                         }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(
-                                "Go to page ${h.page + 1} ›",
-                                style = CalmTypography.metadata,
-                                modifier = Modifier.clickable { onNavigate(h) },
-                            )
-                            Text("Remove", style = CalmTypography.metadata, modifier = Modifier.clickable { onDelete(h) })
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (confirmRemove == h.id) {
+                                Text("Remove this highlight?", style = CalmTypography.controlLabel)
+                                Row {
+                                    TextAction("Keep") { confirmRemove = null }
+                                    TextAction("Remove") { confirmRemove = null; onDelete(h) }
+                                }
+                            } else {
+                                Box(
+                                    Modifier.heightIn(min = 48.dp).clickable { onNavigate(h) },
+                                    contentAlignment = Alignment.CenterStart,
+                                ) {
+                                    Text("Go to page ${h.page + 1} ›", style = CalmTypography.metadata)
+                                }
+                                TextAction("Remove", CalmTypography.metadata) { confirmRemove = h.id }
+                            }
                         }
                     }
                     Divider()
@@ -973,14 +1073,12 @@ private fun DictionaryPopup(word: String, result: String?, onDismiss: () -> Unit
             // links here were dead ends. The definition comes from the bundled
             // WordNet; Copy is the only side door.
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("Copy", style = CalmTypography.controlLabel.copy(color = Color(0xFF666666)),
-                    modifier = Modifier.clickable {
-                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("word", "$word — ${result ?: ""}"))
-                    })
-                Text("Dismiss", style = CalmTypography.controlLabel.copy(color = Color(0xFF999999)),
-                    modifier = Modifier.clickable { onDismiss() })
+                TextAction("Copy", CalmTypography.controlLabel.copy(color = Color(0xFF666666))) {
+                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("word", "$word — ${result ?: ""}"))
+                }
+                TextAction("Dismiss", CalmTypography.controlLabel.copy(color = Color(0xFF666666))) { onDismiss() }
             }
         }
     }
@@ -991,7 +1089,7 @@ private fun TocOverlay(entries: List<TocEntry>, onNavigate: (TocEntry) -> Unit, 
     Column(Modifier.fillMaxSize().background(Color.White).padding(20.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Contents", style = CalmTypography.libraryTitle.copy(fontSize = 22.sp))
-            Text("Done", style = CalmTypography.controlLabel, modifier = Modifier.clickable { onDismiss() })
+            TextAction("Done") { onDismiss() }
         }
         Spacer(Modifier.height(16.dp))
         if (entries.isEmpty()) { Text("No table of contents available", style = CalmTypography.emptyBody) }
@@ -1009,12 +1107,13 @@ private fun TocOverlay(entries: List<TocEntry>, onNavigate: (TocEntry) -> Unit, 
 
 @Composable
 private fun BookmarksOverlay(bookmarks: List<Bookmark>, currentPage: Int, onNavigate: (Bookmark) -> Unit, onAdd: () -> Unit, onDelete: (Bookmark) -> Unit, onDismiss: () -> Unit) {
+    var confirmRemove by remember { mutableStateOf<Long?>(null) }
     Column(Modifier.fillMaxSize().background(Color.White).padding(20.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Bookmarks", style = CalmTypography.libraryTitle.copy(fontSize = 22.sp))
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text("Add current page", style = CalmTypography.controlLabel, modifier = Modifier.clickable { onAdd() })
-                Text("Done", style = CalmTypography.controlLabel, modifier = Modifier.clickable { onDismiss() })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextAction("Add current page") { onAdd() }
+                TextAction("Done") { onDismiss() }
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -1022,10 +1121,21 @@ private fun BookmarksOverlay(bookmarks: List<Bookmark>, currentPage: Int, onNavi
         else {
             LazyColumn {
                 items(bookmarks) { bm ->
-                    Row(Modifier.fillMaxWidth().clickable { onNavigate(bm) }.padding(vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(bm.label.ifEmpty { "Page ${bm.page + 1}" }, style = CalmTypography.bookTitle)
-                        Text("Remove", style = CalmTypography.metadata, modifier = Modifier.clickable { onDelete(bm) })
+                    val label = bm.label.ifEmpty { "Page ${bm.page + 1}" }
+                    if (confirmRemove == bm.id) {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Remove $label?", style = CalmTypography.controlLabel, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            TextAction("Keep") { confirmRemove = null }
+                            TextAction("Remove") { confirmRemove = null; onDelete(bm) }
+                        }
+                    } else {
+                        Row(Modifier.fillMaxWidth().clickable { onNavigate(bm) }.padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(label, style = CalmTypography.bookTitle, modifier = Modifier.weight(1f))
+                            TextAction("Remove", CalmTypography.metadata) { confirmRemove = bm.id }
+                        }
                     }
                     Divider()
                 }
@@ -1049,9 +1159,22 @@ private fun BookmarksOverlay(bookmarks: List<Bookmark>, currentPage: Int, onNavi
 }
 
 @Composable private fun PlusMinus(onMinus: () -> Unit, onPlus: () -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-        Text("−", style = CalmTypography.controlLabel.copy(fontSize = 20.sp), modifier = Modifier.clickable { onMinus() })
-        Text("+", style = CalmTypography.controlLabel.copy(fontSize = 20.sp), modifier = Modifier.clickable { onPlus() })
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextAction("−", CalmTypography.controlLabel.copy(fontSize = 20.sp)) { onMinus() }
+        TextAction("+", CalmTypography.controlLabel.copy(fontSize = 20.sp)) { onPlus() }
+    }
+}
+
+/** A text button with a 48dp touch target, whatever the size of its label. */
+@Composable private fun TextAction(label: String, style: TextStyle = CalmTypography.controlLabel, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, style = style)
     }
 }
 

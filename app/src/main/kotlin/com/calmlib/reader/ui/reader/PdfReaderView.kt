@@ -73,15 +73,14 @@ class PdfReaderView @JvmOverloads constructor(
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onSingleTapUp(e: MotionEvent): Boolean {
             val w = width.toFloat()
-            // When zoomed, left/right taps would conflict with panning so we suppress
-            // them, but the CENTER tap always opens the controls so the user can
-            // change text settings or reset zoom.
+            // Taps are never pans (those move past the touch slop), so the side
+            // zones work while zoomed too: nextPage/prevPage step a screen at a
+            // time through a zoomed page before changing page.
             val zone = when {
                 e.x < w * 0.40f -> TapZone.LEFT
                 e.x > w * 0.60f -> TapZone.RIGHT
                 else -> TapZone.CENTER
             }
-            if (scale > 1.05f && zone != TapZone.CENTER) return false
             onTapZone?.invoke(zone)
             return true
         }
@@ -130,12 +129,31 @@ class PdfReaderView @JvmOverloads constructor(
 
     /** New page, same zoom: start at the top-left of the page (left-to-right reading). */
     private fun backToTop() {
+        landAtBottom = false
         translateY = 0f
         clampTranslate()
     }
 
+    private val zoomed: Boolean get() = scale > 1.05f
+
+    /** Lines repeated between screens of a zoomed page, so none is lost at the edge. */
+    private val screenOverlapPx: Float get() = 24f * resources.displayMetrics.density
+
+    private fun maxOffsetY(): Float {
+        val bmp = currentBitmap ?: return 0f
+        return max(0f, bmp.height * scaleVsBaseRender() - height)
+    }
+
+    /** Zoomed in: down one screen until the page's bottom is showing, then the
+     *  next page from its top. Otherwise simply the next page. */
     fun nextPage(): Boolean {
         val eng = engine ?: return false
+        if (zoomed && currentBitmap != null && translateY > -maxOffsetY() + 1f) {
+            translateY -= (height - screenOverlapPx).coerceAtLeast(height / 2f)
+            clampTranslate()
+            invalidate()
+            return true
+        }
         if (_currentPage < eng.pageCount - 1) {
             _currentPage++
             backToTop()
@@ -145,10 +163,17 @@ class PdfReaderView @JvmOverloads constructor(
         return false
     }
 
+    /** Mirror of [nextPage]: up one screen, then the previous page from its bottom. */
     fun prevPage(): Boolean {
+        if (zoomed && currentBitmap != null && translateY < -1f) {
+            translateY += (height - screenOverlapPx).coerceAtLeast(height / 2f)
+            clampTranslate()
+            invalidate()
+            return true
+        }
         if (_currentPage > 0) {
             _currentPage--
-            backToTop()
+            if (zoomed) landAtBottom = true else backToTop()
             renderCurrent()
             return true
         }
@@ -251,12 +276,51 @@ class PdfReaderView @JvmOverloads constructor(
 
     @Volatile private var renderToken: Long = 0
 
-    private fun renderCurrent() {
-        val baseW = if (width > 0) width else 800
-        val targetW = if (scale > 1.05f && !isScaling) {
-            (baseW * scale).toInt().coerceAtMost(baseW * 3)
-        } else baseW
+    /** Set when stepping back from the top of a zoomed page: the previous page
+     *  opens at its bottom, where reading left off. Applied when it's shown. */
+    private var landAtBottom = false
 
+    /** One page rendered ahead in the background (the next one), keyed by
+     *  everything that shapes the bitmap so a stale one is never shown. */
+    private var prefetchKey: String? = null
+    private var prefetchBitmap: Bitmap? = null
+    private var prefetchInFlight = false
+    /** Render token of a page turn that is waiting on the in-flight prefetch
+     *  of that same page rather than rendering it a second time. */
+    private var awaitingPrefetchToken = -1L
+
+    private fun targetWidth(): Int {
+        val baseW = if (width > 0) width else 800
+        return if (scale > 1.05f && !isScaling) (baseW * scale).toInt().coerceAtMost(baseW * 3) else baseW
+    }
+
+    private fun renderKey(page: Int, targetW: Int) = "$page|$targetW|$contrastBoost|$boldMode|$trimMargins"
+
+    /** Runs on a worker thread; PdfEngine serialises renders itself. */
+    private fun renderBitmap(engine: PdfEngine, page: Int, targetW: Int, contrast: Boolean, bold: Boolean, trim: Boolean): Bitmap? {
+        val baseW = if (width > 0) width else 800
+        return try {
+            if (trim) {
+                // Render at double width so the cropped area still has detail once it fills the screen.
+                val wide = (targetW * 2).coerceAtMost(baseW * 4)
+                engine.renderPage(page, wide, contrast, bold)?.let { trimToContent(it, targetW) }
+            } else engine.renderPage(page, targetW, contrast, bold)
+        } catch (_: Throwable) { null }
+    }
+
+    private fun showBitmap(bmp: Bitmap?, targetW: Int) {
+        currentBitmap = bmp
+        bitmapBaseWidth = targetW
+        if (landAtBottom) {
+            landAtBottom = false
+            translateY = if (bmp != null) -Float.MAX_VALUE else 0f   // clamped to the page's bottom
+        }
+        clampTranslate()
+        invalidate()
+    }
+
+    private fun renderCurrent() {
+        val targetW = targetWidth()
         val engine = this.engine ?: return
         val page = _currentPage
         val contrast = contrastBoost
@@ -264,25 +328,68 @@ class PdfReaderView @JvmOverloads constructor(
 
         onPageChanged?.invoke(page, totalPages)
 
-        // Render on a background thread — PDFBox fallback is slow (1–3 s/page) and
-        // would freeze the UI thread otherwise. Token guards against piling up renders
-        // when the user flips pages quickly: only the most recent token wins.
+        // Token guards against piling up renders when the user flips pages
+        // quickly: only the most recent token wins.
         val token = ++renderToken
+        val key = renderKey(page, targetW)
+        if (key == prefetchKey) {
+            val ready = prefetchBitmap
+            if (ready != null) {
+                prefetchKey = null
+                prefetchBitmap = null
+                showBitmap(ready, targetW)
+                prefetchNext()
+                return
+            }
+            if (prefetchInFlight) {
+                awaitingPrefetchToken = token
+                return
+            }
+        }
+
+        // Render on a background thread — PDFBox fallback is slow (1–3 s/page) and
+        // would freeze the UI thread otherwise.
         val trim = trimMargins
         kotlin.concurrent.thread(name = "PdfRender", isDaemon = true) {
-            val bmp = try {
-                if (trim) {
-                    // Render at double width so the cropped area still has detail once it fills the screen.
-                    val wide = (targetW * 2).coerceAtMost(baseW * 4)
-                    engine.renderPage(page, wide, contrast, bold)?.let { trimToContent(it, targetW) }
-                } else engine.renderPage(page, targetW, contrast, bold)
-            } catch (_: Throwable) { null }
+            val bmp = renderBitmap(engine, page, targetW, contrast, bold, trim)
             post {
                 if (token == renderToken) {
-                    currentBitmap = bmp
-                    bitmapBaseWidth = targetW
-                    clampTranslate()
-                    invalidate()
+                    showBitmap(bmp, targetW)
+                    prefetchNext()
+                }
+            }
+        }
+    }
+
+    /** Render the page after the current one in the background, at the same
+     *  width and look, so the next turn shows it at once. */
+    private fun prefetchNext() {
+        val engine = this.engine ?: return
+        if (isScaling) return
+        val next = _currentPage + 1
+        if (next >= engine.pageCount) return
+        val targetW = targetWidth()
+        val key = renderKey(next, targetW)
+        if (key == prefetchKey) return
+        prefetchKey = key
+        prefetchBitmap = null
+        prefetchInFlight = true
+        val contrast = contrastBoost
+        val bold = boldMode
+        val trim = trimMargins
+        kotlin.concurrent.thread(name = "PdfPrefetch", isDaemon = true) {
+            val bmp = renderBitmap(engine, next, targetW, contrast, bold, trim)
+            post {
+                if (prefetchKey != key) return@post   // superseded
+                prefetchInFlight = false
+                if (awaitingPrefetchToken == renderToken && _currentPage == next) {
+                    // The reader turned to this page while it was rendering.
+                    awaitingPrefetchToken = -1L
+                    prefetchKey = null
+                    showBitmap(bmp, targetW)
+                    prefetchNext()
+                } else {
+                    prefetchBitmap = bmp
                 }
             }
         }

@@ -19,4 +19,7 @@ data class Bookmark(
     val chapter: Int = 0,
     val label: String = "",
     val dateCreated: Long = System.currentTimeMillis(),
+    /** Chapter-local character offset of the page top; -1 = not recorded
+     *  (older bookmarks, PDFs), in which case [page] is used. */
+    val charOffset: Int = -1,
 )

@@ -54,7 +54,11 @@ class EpubParser(private val file: File) : Closeable {
         // a half-written directory that was trusted forever after, so the book
         // was permanently missing chapters/images.
         val done = File(dir, ".calm_complete")
-        if (done.exists()) return dir
+        if (done.exists()) {
+            // Marks it recently used, so pruning keeps the books being read.
+            dir.setLastModified(System.currentTimeMillis())
+            return dir
+        }
         if (dir.exists()) dir.deleteRecursively()
 
         val staging = File(cacheDir, "$name.tmp")
@@ -107,14 +111,15 @@ class EpubParser(private val file: File) : Closeable {
     /**
      * Extractions are keyed by file mtime, so re-saving a book (or importing a
      * new edition) orphans the old directory. Unbounded, this quietly eats a
-     * user's storage — keep only the most recent few.
+     * user's storage — keep the most recently OPENED few (each open touches its
+     * directory), the one just extracted included.
      */
     private fun pruneOldExtractions(cacheDir: File, keep: String) {
         try {
             cacheDir.listFiles()
                 ?.filter { it.isDirectory && it.name.startsWith("epub_") && it.name != keep }
                 ?.sortedByDescending { it.lastModified() }
-                ?.drop(MAX_CACHED_BOOKS)
+                ?.drop(MAX_CACHED_BOOKS - 1)
                 ?.forEach { it.deleteRecursively() }
         } catch (_: Exception) { }
     }
@@ -122,7 +127,9 @@ class EpubParser(private val file: File) : Closeable {
     companion object {
         private const val MAX_EXTRACT_BYTES = 400L * 1024 * 1024
         private const val MAX_ENTRIES = 5000
-        private const val MAX_CACHED_BOOKS = 4
+        private const val MAX_CACHED_BOOKS = 8
+        /** Covers never need more than this; the largest shelf jacket is ~350px. */
+        private const val COVER_DECODE_WIDTH = 480
     }
 
     fun extractCover(): Bitmap? {
@@ -132,7 +139,14 @@ class EpubParser(private val file: File) : Closeable {
 
         val entryPath = opfDir + coverHref
         val entry = zip.getEntry(entryPath) ?: zip.getEntry(coverHref) ?: return null
-        return zip.getInputStream(entry).use { BitmapFactory.decodeStream(it) }
+        // Decode at a fraction of the size: some covers are 3000px+ and would
+        // cost tens of MB decoded in full, only to be scaled down.
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        zip.getInputStream(entry).use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= COVER_DECODE_WIDTH) sample *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        return zip.getInputStream(entry).use { BitmapFactory.decodeStream(it, null, opts) }
     }
 
     /**

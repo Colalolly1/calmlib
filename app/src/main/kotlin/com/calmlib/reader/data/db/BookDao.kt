@@ -66,6 +66,9 @@ interface BookDao {
     @Query("UPDATE books SET currentPage = :page, currentChapter = :chapter, scrollOffset = :offset, bookProgress = :bookProgress, lastRead = :time, isCurrentlyReading = 1 WHERE id = :bookId")
     suspend fun updateProgress(bookId: Long, page: Int, chapter: Int, offset: Float, bookProgress: Float, time: Long = System.currentTimeMillis())
 
+    @Query("UPDATE books SET filePath = :path, fileSize = :size WHERE id = :bookId")
+    suspend fun updateFilePath(bookId: Long, path: String, size: Long)
+
     @Query("UPDATE books SET totalPages = :total WHERE id = :bookId")
     suspend fun updateTotalPages(bookId: Long, total: Int)
 

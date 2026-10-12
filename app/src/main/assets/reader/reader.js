@@ -52,6 +52,11 @@ var CalmReader = {
         if (this._inited) return;
         this._inited = true;
         var self = this;
+        // Everything that changes layout happens BEFORE the first page grid:
+        // settings, display classes, bionic, unwrapped SVG covers. A saved
+        // position restored afterwards then lands on the text it was saved at.
+        this._applyInitial();
+        this._unwrapSvgImages();
         this._whenImagesSettled(function() {
             self.calculatePages();
         });
@@ -59,7 +64,14 @@ var CalmReader = {
             // Debounced: immersive-mode transitions fire several resize events.
             clearTimeout(self._resizeDebounce);
             self._resizeDebounce = setTimeout(function() {
-                self.calculatePages();   // offset-converts position on height change
+                // Only the height changes (vertical margin, system bars), so the
+                // text at the top of the screen is still the reader's place.
+                // Return to it rather than rounding the old offset, which could
+                // skip lines when the page got shorter.
+                var anchor = self._paginated ? self._captureAnchor() : null;
+                var seq = self._navSeq;
+                self.calculatePages();
+                if (anchor && self._navSeq === seq && !self._atEnd) self._restoreAnchor(anchor);
             }, 150);
         });
     },
@@ -75,14 +87,22 @@ var CalmReader = {
         for (var i = 0; i < imgs.length; i++) {
             if (!imgs[i].complete) pending.push(imgs[i]);
         }
-        if (pending.length === 0) { cb(); return; }
+        // The reader fonts load on first layout; text measured with the
+        // fallback font reflows when they arrive. Force that layout, then wait
+        // for them under the same cap as the images.
+        var _ = document.body ? document.body.offsetHeight : 0;
+        var fontsPending = !!(document.fonts && document.fonts.status === 'loading');
+        if (pending.length === 0 && !fontsPending) { cb(); return; }
         var done = false;
-        var left = pending.length;
+        var left = pending.length + (fontsPending ? 1 : 0);
         var finish = function() { if (!done) { done = true; cb(); } };
         var tick = function() { if (--left <= 0) finish(); };
         for (var j = 0; j < pending.length; j++) {
             pending[j].addEventListener('load', tick);
             pending[j].addEventListener('error', tick);
+        }
+        if (fontsPending) {
+            try { document.fonts.ready.then(tick, tick); } catch (e) { tick(); }
         }
         setTimeout(finish, 1500);
     },
@@ -134,6 +154,8 @@ var CalmReader = {
             return;
         }
         this._layoutRetryCount = 0;
+        // Image cap follows the page grid; settle it before measuring.
+        if (this._syncImageCap()) { var _r = document.body.offsetHeight; }
         var h = this._contentHeight();
         this.totalPages = Math.max(1, Math.ceil(h / this.pageHeight));
         var wasPaginated = this._paginated;
@@ -145,8 +167,15 @@ var CalmReader = {
             var c = this._pendingChar;
             this._pendingChar = null;
             this._pendingPage = null;
+            this._pendingAnchor = null;
             this._resolveCharOffset(c);
             return;
+        }
+        if (this._pendingAnchor != null) {
+            var a = this._pendingAnchor;
+            this._pendingAnchor = null;
+            this._pendingPage = null;
+            if (this._resolveAnchor(a)) return;
         }
         if (this._pendingPage != null) {
             var p = this._pendingPage;
@@ -165,6 +194,9 @@ var CalmReader = {
             );
         }
         if (this.currentPage >= this.totalPages) this.currentPage = this.totalPages - 1;
+        // Arrived via "go to end" (previous chapter) and not moved since: a
+        // late reflow must not strand the reader short of the last page.
+        if (this._atEnd) this.currentPage = this.totalPages - 1;
         // Re-align the transform to the (possibly new) grid.
         this.goToPage(this.currentPage, true, 'grid-sync');
     },
@@ -205,7 +237,7 @@ var CalmReader = {
     goToPage: function(n, _internal, src) {
         this._dbg('goToPage n=' + n + ' internal=' + !!_internal + ' src=' + (src || '?') +
                   ' cur=' + this.currentPage + '/' + this.totalPages + ' paginated=' + this._paginated);
-        if (!_internal) this._navSeq++;
+        if (!_internal) { this._navSeq++; this._atEnd = false; }
         // Grid not computed yet (images still settling): remember the request and
         // honor it when calculatePages runs. Clamping against a totalPages of 1
         // here would silently discard a saved-position restore.
@@ -223,7 +255,10 @@ var CalmReader = {
     /** Jump to the chapter's final page — safe to call before pagination exists
      *  (the huge index is clamped once the real grid is computed). */
     goToEndOfChapter: function() {
+        this._pendingChar = null;
+        this._pendingAnchor = null;
         this.goToPage(this._paginated ? this.totalPages - 1 : 1000000000, false, 'goToEnd');
+        this._atEnd = true;
     },
 
     nextPage: function() {
@@ -308,43 +343,54 @@ var CalmReader = {
         }
     },
 
-    setStyle: function(fontSize, lineSpacing, marginH, marginV, fontFamily) {
-        // Anchor-restore is ONLY for genuine settings changes mid-read. The
-        // chapter-load pipeline re-applies the same values the HTML was rendered
-        // with; anchoring there chased text that shifted under late-loading
-        // images and produced the show-page-then-skip bug.
-        var sig = fontSize + '|' + lineSpacing + '|' + marginH + '|' + marginV + '|' + fontFamily;
-        var isFirstApply = !this._styleAppliedOnce;
-        this._styleAppliedOnce = true;
-        var shouldAnchor = !isFirstApply && this._styleSig !== sig;
-        this._styleSig = sig;
-        var anchor = shouldAnchor ? this._captureAnchor() : null;
-        var navSeqAtCapture = this._navSeq;
-        // Cap images to the PAGE GRID, not the raw viewport. pageHeight is
-        // snapped DOWN to a line-height multiple, so a 100vh-based cap makes
-        // every full-height image overflow the page boundary by a few px —
-        // manufacturing a phantom mostly-blank page after each big picture.
-        // Mirror refreshPageHeight's math with the values being applied now.
-        var lhPx = fontSize * lineSpacing;
-        var usableH = (window.innerHeight || document.documentElement.clientHeight || 0) - 2;
-        var gridPH = Math.floor(usableH / lhPx) * lhPx;
-        var imgMax = (usableH > 100 && gridPH > lhPx)
-            ? Math.max(lhPx, gridPH - 2 * marginV - lhPx) + 'px'
-            : 'calc(100vh - ' + (2 * marginV + 20) + 'px)';
-        // Inject a stylesheet (covers nodes added later) AND set inline styles
-        // (beats publisher class-based !important rules).
+    /** Settings signature: tells a genuine change from a re-apply of the same values. */
+    _styleSigOf: function(fontSize, lineSpacing, marginH, marginV, fontFamily) {
+        return (+fontSize) + '|' + (+lineSpacing) + '|' + (+marginH) + '|' + (+marginV) + '|' + fontFamily;
+    },
+
+    _setStyleValues: function(fontSize, lineSpacing, marginH, marginV, fontFamily) {
+        this._style = {
+            fontSize: +fontSize, lineSpacing: +lineSpacing,
+            marginH: +marginH, marginV: +marginV, fontFamily: fontFamily
+        };
+    },
+
+    /**
+     * Cap images to the PAGE GRID, not the raw viewport. pageHeight is snapped
+     * DOWN to a line-height multiple, so a 100vh-based cap makes every
+     * full-height image overflow the page boundary by a few px — manufacturing
+     * a phantom mostly-blank page after each big picture. One line is left for
+     * the image's own margins. Until a grid exists a viewport estimate stands
+     * in; calculatePages swaps in the exact value before it measures anything.
+     */
+    _imgCap: function() {
+        var st = this._style;
+        var lh = st.fontSize * st.lineSpacing;
+        if (this.pageHeight > 2 * lh) return Math.floor(this.pageHeight - lh) + 'px';
+        return 'calc(100vh - ' + Math.ceil(lh + 4) + 'px)';
+    },
+
+    /** Write the override stylesheet for the current settings. Only touches
+     *  <head>, so it is safe while the document is still parsing. */
+    _writeOverrides: function() {
+        var st = this._style;
+        if (!st) return;
         var styleEl = document.getElementById('calm-overrides');
         if (!styleEl) {
             styleEl = document.createElement('style');
             styleEl.id = 'calm-overrides';
-            document.head.appendChild(styleEl);
+            (document.head || document.documentElement).appendChild(styleEl);
         }
+        var imgMax = this._imgCap();
+        this._imgCapApplied = imgMax;
+        // No vertical body padding: the app pads the WebView itself, so the
+        // margin shows on every page and the footer never sits over text.
         styleEl.textContent =
             'html { height: 100vh !important; overflow: hidden !important; margin: 0 !important; padding: 0 !important; } ' +
-            'body { font-size: ' + fontSize + 'px !important; ' +
-                  'line-height: ' + lineSpacing + ' !important; ' +
-                  'font-family: ' + fontFamily + ' !important; ' +
-                  'padding: ' + marginV + 'px ' + marginH + 'px !important; ' +
+            'body { font-size: ' + st.fontSize + 'px !important; ' +
+                  'line-height: ' + st.lineSpacing + ' !important; ' +
+                  'font-family: ' + st.fontFamily + ' !important; ' +
+                  'padding: 0 ' + st.marginH + 'px !important; ' +
                   'margin: 0 !important; ' +
                   'height: auto !important; ' +
                   'min-height: 100vh !important; ' +
@@ -363,6 +409,8 @@ var CalmReader = {
                   '-webkit-column-break-before: auto !important; -webkit-column-break-after: auto !important; -webkit-column-break-inside: auto !important; ' +
                   'column-span: none !important; -webkit-column-span: none !important; ' +
                   '} ' +
+            // Publisher greys go faint or outlined on this panel.
+            'body * { color: #000 !important; } ' +
             'body img, body svg, body video, body canvas { ' +
                   'max-width: 100% !important; ' +
                   'max-height: ' + imgMax + ' !important; ' +
@@ -370,16 +418,29 @@ var CalmReader = {
                   '} ' +
             'body h1 { font-size: 1.7em !important; } body h2 { font-size: 1.45em !important; } ' +
             'body h3 { font-size: 1.25em !important; } body h4, body h5, body h6 { font-size: 1.1em !important; }';
+    },
 
-        // Apply inline on body so publisher inline-style rules don't win.
+    /** True when the image cap no longer matches the page grid (first grid,
+     *  resize) and the stylesheet was rewritten. */
+    _syncImageCap: function() {
+        if (!this._style) return false;
+        if (this._imgCap() === this._imgCapApplied) return false;
+        this._writeOverrides();
+        return true;
+    },
+
+    /** Inline !important on body and every descendant — beats publisher inline
+     *  and class-based !important rules the stylesheet alone can't. */
+    _applyInlineStyles: function() {
+        var st = this._style;
         var b = document.body.style;
-        b.setProperty('font-size', fontSize + 'px', 'important');
-        b.setProperty('line-height', '' + lineSpacing, 'important');
-        b.setProperty('font-family', fontFamily, 'important');
-        b.setProperty('padding-left', marginH + 'px', 'important');
-        b.setProperty('padding-right', marginH + 'px', 'important');
-        b.setProperty('padding-top', marginV + 'px', 'important');
-        b.setProperty('padding-bottom', marginV + 'px', 'important');
+        b.setProperty('font-size', st.fontSize + 'px', 'important');
+        b.setProperty('line-height', '' + st.lineSpacing, 'important');
+        b.setProperty('font-family', st.fontFamily, 'important');
+        b.setProperty('padding-left', st.marginH + 'px', 'important');
+        b.setProperty('padding-right', st.marginH + 'px', 'important');
+        b.setProperty('padding-top', '0', 'important');
+        b.setProperty('padding-bottom', '0', 'important');
         b.setProperty('margin', '0', 'important');
         b.setProperty('height', 'auto', 'important');
         b.setProperty('min-height', '100vh', 'important');
@@ -391,7 +452,6 @@ var CalmReader = {
         b.setProperty('column-width', 'auto', 'important');
         b.setProperty('-webkit-column-width', 'auto', 'important');
 
-        // Force inline on every descendant — inline !important beats class !important.
         var all = document.body.querySelectorAll('*');
         for (var i = 0; i < all.length; i++) {
             var el = all[i];
@@ -418,6 +478,55 @@ var CalmReader = {
             else if (tag === 'H4' || tag === 'H5' || tag === 'H6') s.setProperty('font-size', '1.1em', 'important');
             else s.setProperty('font-size', 'inherit', 'important');
         }
+    },
+
+    /**
+     * Apply the settings the app shipped inside the document (CalmInitial)
+     * before the first page grid exists, and record them, so the load
+     * pipeline's setStyle / setDisplayMode / setTextOptions calls with the same
+     * values change nothing. Those calls used to reflow the chapter AFTER the
+     * saved position was restored, which is why reopening landed pages early.
+     */
+    _applyInitial: function() {
+        var c = window.CalmInitial;
+        if (!c || this._initialApplied || !document.body) return;
+        this._initialApplied = true;
+        this._setStyleValues(c.fontSize, c.lineSpacing, c.marginH, c.marginV, c.fontFamily);
+        this._styleSig = this._styleSigOf(c.fontSize, c.lineSpacing, c.marginH, c.marginV, c.fontFamily);
+        this._styleAppliedOnce = true;
+        this._writeOverrides();
+        this._applyInlineStyles();
+        var body = document.body;
+        body.classList.toggle('contrast-boost', !!c.contrastBoost);
+        body.classList.toggle('bold-mode', !!c.boldMode);
+        body.classList.toggle('no-antialias', !!c.noAntialias);
+        this._displaySig = !!c.contrastBoost + '|' + !!c.boldMode + '|' + !!c.noAntialias;
+        body.classList.toggle('justify', !!c.justify);
+        body.classList.toggle('no-hyphens', !c.hyphenation);
+        if (c.bionic && !body.classList.contains('bionic')) {
+            this.applyBionic();
+            body.classList.add('bionic');
+        }
+        this._textOptsSig = !!c.justify + '|' + !!c.hyphenation + '|' + !!c.bionic;
+        this._textOptsAppliedOnce = true;
+    },
+
+    setStyle: function(fontSize, lineSpacing, marginH, marginV, fontFamily) {
+        // Anchor-restore is ONLY for genuine settings changes mid-read. The
+        // chapter-load pipeline re-applies the values the document was built
+        // with; that is a no-op, so a restored position is never reflowed away.
+        var sig = this._styleSigOf(fontSize, lineSpacing, marginH, marginV, fontFamily);
+        if (this._styleAppliedOnce && this._styleSig === sig) return;
+        var shouldAnchor = !!this._styleAppliedOnce;
+        this._styleAppliedOnce = true;
+        this._styleSig = sig;
+        var anchor = shouldAnchor ? this._captureAnchor() : null;
+        if (shouldAnchor) this._atEnd = false;
+        var navSeqAtCapture = this._navSeq;
+        this._setStyleValues(fontSize, lineSpacing, marginH, marginV, fontFamily);
+        // Stylesheet covers nodes added later; inline styles beat publisher rules.
+        this._writeOverrides();
+        this._applyInlineStyles();
 
         // Trigger reflow, wait for image layout to settle, recompute the grid,
         // then either return to the anchored text (genuine settings change) or
@@ -435,22 +544,26 @@ var CalmReader = {
     },
 
     setDisplayMode: function(contrastBoost, boldMode, noAntialias) {
+        var sig = !!contrastBoost + '|' + !!boldMode + '|' + !!noAntialias;
+        if (this._displaySig === sig) return;
+        this._displaySig = sig;
         var body = document.body;
-        body.classList.toggle('contrast-boost', contrastBoost);
-        body.classList.toggle('bold-mode', boldMode);
-        body.classList.toggle('no-antialias', noAntialias);
+        body.classList.toggle('contrast-boost', !!contrastBoost);
+        body.classList.toggle('bold-mode', !!boldMode);
+        body.classList.toggle('no-antialias', !!noAntialias);
         this.calculatePages();
     },
 
     setTextOptions: function(justify, hyphenation, bionic) {
-        // Same first-apply guard as setStyle: the chapter-load pipeline calls this
-        // with the already-rendered values; only genuine toggles should anchor.
+        // Same guard as setStyle: re-applying the values the document already
+        // has is a no-op; only genuine toggles reflow and anchor.
         var sig = !!justify + '|' + !!hyphenation + '|' + !!bionic;
-        var isFirstApply = !this._textOptsAppliedOnce;
+        if (this._textOptsAppliedOnce && this._textOptsSig === sig) return;
+        var shouldAnchor = !!this._textOptsAppliedOnce;
         this._textOptsAppliedOnce = true;
-        var shouldAnchor = !isFirstApply && this._textOptsSig !== sig;
         this._textOptsSig = sig;
         var anchor = shouldAnchor ? this._captureAnchor() : null;
+        if (shouldAnchor) this._atEnd = false;
         var navSeqAtCapture = this._navSeq;
         var body = document.body;
         body.classList.toggle('justify', !!justify);
@@ -599,34 +712,67 @@ var CalmReader = {
         if (window.getSelection) window.getSelection().removeAllRanges();
     },
 
-    markHighlight: function(text) {
+    /** Underline `text`. With `near` (a chapter character offset) the
+     *  occurrence closest to it is marked, so a repeated phrase highlights where
+     *  it was selected rather than wherever it first appears. */
+    markHighlight: function(text, near) {
         if (!text || text.length < 2) return false;
+        var hasNear = typeof near === 'number' && near >= 0;
         var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-        var node;
+        var count = 0, node, best = null, bestIdx = -1, bestDist = Infinity;
         while ((node = walker.nextNode())) {
-            var idx = node.nodeValue.indexOf(text);
-            if (idx >= 0) {
-                var before = node.nodeValue.substring(0, idx);
-                var match = node.nodeValue.substring(idx, idx + text.length);
-                var after = node.nodeValue.substring(idx + text.length);
-                var span = document.createElement('span');
-                span.className = 'highlight';
-                span.textContent = match;
-                var afterNode = document.createTextNode(after);
-                node.nodeValue = before;
-                node.parentNode.insertBefore(span, node.nextSibling);
-                node.parentNode.insertBefore(afterNode, span.nextSibling);
-                return true;
+            var v = node.nodeValue;
+            var inMark = node.parentNode && node.parentNode.className === 'highlight';
+            var idx = inMark ? -1 : v.indexOf(text);
+            while (idx >= 0) {
+                var d = hasNear ? Math.abs(count + idx - near) : 0;
+                if (d < bestDist) { best = node; bestIdx = idx; bestDist = d; }
+                if (!hasNear) break;
+                idx = v.indexOf(text, idx + 1);
             }
+            if (best && !hasNear) break;
+            count += v.length;
         }
-        return false;
+        if (!best) return false;
+        var val = best.nodeValue;
+        var span = document.createElement('span');
+        span.className = 'highlight';
+        span.textContent = val.substring(bestIdx, bestIdx + text.length);
+        var afterNode = document.createTextNode(val.substring(bestIdx + text.length));
+        best.nodeValue = val.substring(0, bestIdx);
+        best.parentNode.insertBefore(span, best.nextSibling);
+        best.parentNode.insertBefore(afterNode, span.nextSibling);
+        return true;
     },
 
-    applyAllHighlights: function(jsonList) {
+    /** Items are plain strings or {text, offset}. Marking only splits text
+     *  nodes inside unpadded spans, so it never moves the page grid. */
+    applyAllHighlights: function(list) {
         try {
-            var arr = JSON.parse(jsonList);
-            for (var i = 0; i < arr.length; i++) this.markHighlight(arr[i]);
+            var arr = typeof list === 'string' ? JSON.parse(list) : list;
+            for (var i = 0; i < arr.length; i++) {
+                var h = arr[i];
+                if (typeof h === 'string') this.markHighlight(h);
+                else if (h) this.markHighlight(h.text, h.offset);
+            }
         } catch (e) {}
+    },
+
+    /** Chapter character offset where the current selection starts; -1 if none. */
+    _selectionCharOffset: function() {
+        try {
+            var sel = window.getSelection();
+            if (!sel || sel.rangeCount === 0) return -1;
+            var r = sel.getRangeAt(0);
+            var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+            var count = 0, node;
+            while ((node = walker.nextNode())) {
+                if (node === r.startContainer) return count + r.startOffset;
+                if (r.intersectsNode(node)) return count;
+                count += node.nodeValue.length;
+            }
+        } catch (e) {}
+        return -1;
     },
 
     /**
@@ -666,8 +812,40 @@ var CalmReader = {
     goToCharOffset: function(n) {
         if (n == null || n < 0) return;
         this._navSeq++;   // counts as explicit navigation
+        this._atEnd = false;
+        this._pendingAnchor = null;
         if (!this._paginated) { this._pendingChar = n; return; }
         this._resolveCharOffset(n);
+    },
+
+    /** Navigate to the element with this id (contents entries, footnotes).
+     *  Queued like goToCharOffset when the grid isn't ready yet. */
+    goToAnchor: function(id) {
+        if (!id) return false;
+        this._navSeq++;
+        this._atEnd = false;
+        this._pendingChar = null;
+        if (!this._paginated) { this._pendingAnchor = id; return true; }
+        return this._resolveAnchor(id);
+    },
+
+    _resolveAnchor: function(id) {
+        try {
+            var el = document.getElementById(id);
+            if (!el) {
+                var named = document.getElementsByName(id);
+                el = named.length ? named[0] : null;
+            }
+            // An anchor with no box of its own (display:none, empty inline)
+            // measures as zero; its nearest laid-out ancestor marks the spot.
+            while (el && el !== document.body && el.getClientRects().length === 0) el = el.parentElement;
+            if (!el || el === document.body) return false;
+            var rect = el.getBoundingClientRect();
+            var docY = rect.top + this._currentTranslate();
+            var page = Math.floor((docY + 1) / this.pageHeight);
+            this.goToPage(Math.max(0, page), true, 'anchor');
+            return true;
+        } catch (e) { return false; }
     },
 
     /** Rect of the single character at (node, off); null if unmeasurable. */
@@ -747,7 +925,7 @@ var CalmReader = {
     notifySelection: function() {
         var sel = this.getSelectedText();
         if (sel.length > 0) {
-            try { CalmBridge.onTextSelected(sel); } catch (e) {}
+            try { CalmBridge.onTextSelected(sel, this._selectionCharOffset()); } catch (e) {}
         }
     },
 
@@ -845,11 +1023,48 @@ var CalmReader = {
     }
 };
 
+// The app writes CalmInitial (the reader's settings) ahead of this script, so
+// the override stylesheet exists before the body is even parsed and the first
+// layout already uses the reader's size, spacing and margins.
+try {
+    if (window.CalmInitial) {
+        var __ci = window.CalmInitial;
+        CalmReader._setStyleValues(__ci.fontSize, __ci.lineSpacing, __ci.marginH, __ci.marginV, __ci.fontFamily);
+        CalmReader._writeOverrides();
+    }
+} catch (e) {}
+
 document.addEventListener('DOMContentLoaded', function() {
     setTimeout(function() {
         CalmReader.init();
         CalmReader.attachImageHandlers();
     }, 100);
+
+    // Links inside the book (contents pages, footnotes) are followed by the
+    // app, which knows the chapters and offers a way back. Capture phase, so a
+    // linked picture doesn't also open the image viewer. Web links go nowhere
+    // (no browser here) and the tap falls through to the page-turn zones.
+    document.addEventListener('click', function(e) {
+        var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+        if (!a) return;
+        e.preventDefault();
+        var raw = a.getAttribute('href') || '';
+        var path, id;
+        try {
+            if (raw.charAt(0) === '#') {
+                if (raw.length < 2) return;   // href="#" leads nowhere
+                path = '';
+                id = decodeURIComponent(raw.substring(1));
+            } else if (a.protocol === 'file:') {
+                path = decodeURIComponent(a.pathname);
+                id = a.hash ? decodeURIComponent(a.hash.substring(1)) : '';
+            } else {
+                return;
+            }
+        } catch (ex) { return; }
+        e.stopPropagation();
+        try { CalmBridge.onLinkTapped(path, id); } catch (ex) {}
+    }, true);
 
     document.addEventListener('selectionchange', function() {
         clearTimeout(CalmReader._selDebounce);

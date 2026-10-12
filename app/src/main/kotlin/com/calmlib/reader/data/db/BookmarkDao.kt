@@ -6,7 +6,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface BookmarkDao {
-    @Query("SELECT * FROM bookmarks WHERE bookId = :bookId ORDER BY page ASC")
+    @Query("SELECT * FROM bookmarks WHERE bookId = :bookId ORDER BY chapter ASC, page ASC")
     fun forBook(bookId: Long): Flow<List<Bookmark>>
 
     @Insert

@@ -7,10 +7,13 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -24,7 +27,30 @@ import androidx.compose.ui.unit.sp
 import com.calmlib.reader.data.model.Book
 import com.calmlib.reader.data.model.BookFormat
 import com.calmlib.reader.ui.theme.CalmFonts
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.abs
+
+/** Decoded covers, so scrolling back or switching tabs doesn't decode again
+ *  (or flash the stand-in jacket while it does). Sized in bytes. */
+private val coverCache = object : android.util.LruCache<String, ImageBitmap>(12 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int = value.width * value.height * 4
+}
+
+private fun decodeCover(path: String, targetPx: Int): ImageBitmap? = try {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= targetPx) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+} catch (_: Exception) { null }
+
+/** Cover load state: still decoding vs. finished (with or without an image). */
+private sealed interface CoverState {
+    object Loading : CoverState
+    data class Done(val bitmap: ImageBitmap?) : CoverState
+}
 
 /**
  * A book standing on a shelf: the cover image when we have one, otherwise a
@@ -42,18 +68,24 @@ fun BookCover(
 ) {
     val density = LocalDensity.current
     val targetPx = with(density) { width.roundToPx() }
-    val bitmap = remember(book.coverPath, targetPx) {
-        book.coverPath?.let { path ->
-            try {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(path, bounds)
-                var sample = 1
-                while (bounds.outWidth / (sample * 2) >= targetPx) sample *= 2
-                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
-            } catch (_: Exception) { null }
-        }
+    val path = book.coverPath
+    val key = "$path|$targetPx"
+    // Decoded off the main thread; a cached cover shows on the first frame.
+    // Keyed state, so a reused slot never shows the previous book's cover.
+    val state = remember(key) {
+        mutableStateOf<CoverState>(
+            if (path == null) CoverState.Done(null)
+            else coverCache.get(key)?.let { CoverState.Done(it) } ?: CoverState.Loading
+        )
     }
+    LaunchedEffect(key) {
+        if (state.value is CoverState.Done || path == null) return@LaunchedEffect
+        val decoded = withContext(Dispatchers.IO) { decodeCover(path, targetPx) }
+        if (decoded != null) coverCache.put(key, decoded)
+        state.value = CoverState.Done(decoded)
+    }
+    val current = state.value
+    val bitmap = (current as? CoverState.Done)?.bitmap
 
     Box(
         modifier = modifier
@@ -68,7 +100,9 @@ fun BookCover(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
-        } else {
+        } else if (current is CoverState.Done) {
+            // Only once decoding is over: drawing the stand-in while the real
+            // cover loads would cost e-ink a second repaint of every jacket.
             FallbackCover(book = book, modifier = Modifier.fillMaxSize())
         }
 

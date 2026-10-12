@@ -53,12 +53,26 @@ class BookRepository(private val context: Context) {
 
     suspend fun bookByPath(path: String): Book? = bookDao.getByPath(path)
 
-    suspend fun importFromFile(file: File): Book? = withContext(Dispatchers.IO) {
+    /** How [importFromFileDetailed] resolved a file. */
+    enum class ImportKind {
+        /** A new library entry. */
+        NEW,
+        /** Already in the library (same path, or a copy whose original is still there). */
+        EXISTING,
+        /** A library book whose file had gone missing, now pointed at this one. */
+        MOVED,
+    }
+
+    data class ImportResult(val book: Book, val kind: ImportKind)
+
+    suspend fun importFromFile(file: File): Book? = importFromFileDetailed(file)?.book
+
+    suspend fun importFromFileDetailed(file: File): ImportResult? = withContext(Dispatchers.IO) {
         try {
             if (!file.exists() || !file.canRead()) return@withContext null
             val format = detectFormatByName(file.name) ?: return@withContext null
 
-            bookDao.getByPath(file.absolutePath)?.let { return@withContext it }
+            bookDao.getByPath(file.absolutePath)?.let { return@withContext ImportResult(it, ImportKind.EXISTING) }
 
             var title = file.nameWithoutExtension
             var author = ""
@@ -89,8 +103,14 @@ class BookRepository(private val context: Context) {
             }
 
             // Content-based dedup so a manually imported book + a scanned one
-            // at a different path don't both register.
-            bookDao.getByFingerprint(title, author, file.length())?.let { return@withContext it }
+            // at a different path don't both register. If the known copy's file
+            // is gone, the book was MOVED: repoint the record so its progress,
+            // highlights and bookmarks come along instead of being stranded.
+            bookDao.getByFingerprint(title, author, file.length())?.let { known ->
+                if (File(known.filePath).exists()) return@withContext ImportResult(known, ImportKind.EXISTING)
+                bookDao.updateFilePath(known.id, file.absolutePath, file.length())
+                return@withContext ImportResult(known.copy(filePath = file.absolutePath, fileSize = file.length()), ImportKind.MOVED)
+            }
 
             // Rendering a first page is the slow part, so it waits until we know
             // this is a genuinely new book and not a copy of one we have.
@@ -108,7 +128,7 @@ class BookRepository(private val context: Context) {
                 fileSize = file.length(),
             )
             val id = bookDao.insert(book)
-            book.copy(id = id)
+            ImportResult(book.copy(id = id), ImportKind.NEW)
         } catch (_: Exception) {
             null
         }
@@ -161,14 +181,22 @@ class BookRepository(private val context: Context) {
 
             // Content-based dedup — if we already have this exact book from a scan,
             // return it instead of copying again.
-            bookDao.getByFingerprint(title, author, tempFile.length())?.let {
+            val known = bookDao.getByFingerprint(title, author, tempFile.length())
+            if (known != null && File(known.filePath).exists()) {
                 tempFile.delete()
-                return@withContext it
+                return@withContext known
             }
 
             val destFile = File(booksDir, "${System.currentTimeMillis()}_${sanitize(title)}.$ext")
             tempFile.copyTo(destFile, overwrite = true)
             tempFile.delete()
+
+            // Known book whose file had gone missing: keep the record (progress,
+            // highlights, bookmarks) and point it at the new copy.
+            if (known != null) {
+                bookDao.updateFilePath(known.id, destFile.absolutePath, destFile.length())
+                return@withContext known.copy(filePath = destFile.absolutePath, fileSize = destFile.length())
+            }
 
             val coverPath = coverBitmap?.let { saveCover(it, destFile.nameWithoutExtension) }
 
@@ -298,8 +326,8 @@ class BookRepository(private val context: Context) {
     fun bookmarksForBook(bookId: Long): Flow<List<Bookmark>> =
         bookmarkDao.forBook(bookId)
 
-    suspend fun addBookmark(bookId: Long, page: Int, chapter: Int, label: String): Long =
-        bookmarkDao.insert(Bookmark(bookId = bookId, page = page, chapter = chapter, label = label))
+    suspend fun addBookmark(bookId: Long, page: Int, chapter: Int, label: String, charOffset: Int = -1): Long =
+        bookmarkDao.insert(Bookmark(bookId = bookId, page = page, chapter = chapter, label = label, charOffset = charOffset))
 
     suspend fun deleteBookmark(bookmark: Bookmark) = bookmarkDao.delete(bookmark)
 
@@ -372,8 +400,21 @@ class BookRepository(private val context: Context) {
 
     private fun saveCover(bitmap: Bitmap, name: String): String {
         val file = File(coversDir, "$name.png")
-        FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 90, it) }
+        val scaled = downscaleCover(bitmap)
+        FileOutputStream(file).use { scaled.compress(Bitmap.CompressFormat.PNG, 90, it) }
         return file.absolutePath
+    }
+
+    /** Covers are stored no bigger than the shelves ever draw them, so the
+     *  library decodes small files instead of full-size book art. */
+    private fun downscaleCover(src: Bitmap): Bitmap {
+        val maxW = 480
+        val maxH = 720
+        if (src.width <= maxW && src.height <= maxH) return src
+        val f = minOf(maxW.toFloat() / src.width, maxH.toFloat() / src.height)
+        val w = (src.width * f).toInt().coerceAtLeast(1)
+        val h = (src.height * f).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(src, w, h, true)
     }
 
     /**

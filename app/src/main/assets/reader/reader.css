@@ -99,13 +99,13 @@ body.no-antialias {
     font-smooth: never !important;
 }
 
-/* User highlights — underlined for E-Ink visibility */
+/* User highlights — underlined for E-Ink visibility. No padding: they are
+   marked after the page grid exists, and any box change would reflow it. */
 .highlight {
     text-decoration: underline !important;
     text-decoration-thickness: 2px !important;
     text-underline-offset: 2px !important;
     background: #f0f0f0 !important;
-    padding: 0 1px;
 }
 
 /* Reading options */

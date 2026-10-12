@@ -24,7 +24,7 @@ import com.calmlib.reader.data.model.VocabularyEntry
         VocabularyEntry::class,
         ReadingSession::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -49,6 +49,42 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v5 → v6: bookmarks remember a character offset, which survives font
+         * and margin changes where a page index doesn't. Existing bookmarks are
+         * kept; the two kinds whose offset is certain are converted — the start
+         * of a chapter, and a bookmark on the page the book is saved at (that
+         * position's offset is stored on the book). The rest keep using their
+         * page index.
+         */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE bookmarks ADD COLUMN charOffset INTEGER NOT NULL DEFAULT -1")
+                db.execSQL(
+                    """
+                    UPDATE bookmarks SET charOffset = 0
+                    WHERE page = 0
+                      AND bookId IN (SELECT id FROM books WHERE format != 'PDF')
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    UPDATE bookmarks SET charOffset = (
+                        SELECT CAST(b.scrollOffset AS INTEGER) FROM books b WHERE b.id = bookmarks.bookId
+                    )
+                    WHERE charOffset = -1 AND EXISTS (
+                        SELECT 1 FROM books b
+                        WHERE b.id = bookmarks.bookId
+                          AND b.format != 'PDF'
+                          AND b.scrollOffset > 0
+                          AND b.currentChapter = bookmarks.chapter
+                          AND b.currentPage = bookmarks.page
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -59,7 +95,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "calmlib.db"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     // NO fallbackToDestructiveMigration: a forgotten migration
                     // would silently delete every book, highlight and reading
                     // position the user has. Crashing loudly in development is

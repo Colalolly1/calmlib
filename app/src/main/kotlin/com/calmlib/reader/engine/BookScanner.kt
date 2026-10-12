@@ -56,12 +56,15 @@ class BookScanner(
                 skipped++
                 continue
             }
-            val book = repository.importFromFile(file)
-            if (book != null && book.filePath != file.absolutePath) {
-                // Same book already in the library under another path (a copy
-                // in a second folder): not new, so don't announce it.
+            val result = repository.importFromFileDetailed(file)
+            if (result == null || result.kind != BookRepository.ImportKind.NEW) {
+                // Unreadable; the same book already in the library under
+                // another path (a copy in a second folder); or a known book
+                // that moved here and was repointed with its progress intact.
+                // None of these is new, so none is announced.
                 skipped++
-            } else if (book != null) {
+            } else {
+                val book = result.book
                 imported++
                 // If KOReader (or another reader) left a sidecar with progress, pull it in.
                 val progress = readKoreaderProgress(file)
@@ -72,7 +75,7 @@ class BookScanner(
                     // fraction is exactly what KOReader recorded.
                     repository.updateProgress(book.id, pages, 0, 0f, bookProgress = progress)
                 }
-            } else skipped++
+            }
         }
         ScanResult(imported, skipped, candidates.size)
     }
