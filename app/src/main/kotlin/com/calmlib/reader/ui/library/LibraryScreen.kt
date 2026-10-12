@@ -65,6 +65,7 @@ fun LibraryScreen(
 ) {
     val books by viewModel.books.collectAsStateWithLifecycle()
     val currentlyReading by viewModel.currentlyReading.collectAsStateWithLifecycle()
+    val readingRecently by viewModel.readingRecently.collectAsStateWithLifecycle()
     val sortField by viewModel.sortField.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
@@ -190,7 +191,7 @@ fun LibraryScreen(
             val epigraph = remember { quoteForToday() }
             BookcaseScreen(
                 books = myShelf,
-                readingNow = currentlyReading.firstOrNull(),
+                reading = readingRecently,
                 epigraph = epigraph,
                 onBookClick = onBookClick,
                 onBookLongClick = { longPressBook = it },

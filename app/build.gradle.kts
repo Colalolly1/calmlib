@@ -15,8 +15,8 @@ android {
         applicationId = "com.calmlib.reader"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.17.0"
+        versionCode = 4
+        versionName = "0.18.0"
     }
 
     // Release signing. Keystore details come from keystore.properties (git-ignored)

@@ -31,6 +31,9 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE isCurrentlyReading = 1 ORDER BY lastRead DESC LIMIT 5")
     fun currentlyReading(): Flow<List<Book>>
 
+    @Query("SELECT * FROM books WHERE isCurrentlyReading = 1 ORDER BY lastRead DESC")
+    fun allCurrentlyReading(): Flow<List<Book>>
+
     @Query("SELECT * FROM books WHERE id = :id")
     suspend fun getById(id: Long): Book?
 

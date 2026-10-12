@@ -42,6 +42,8 @@ class BookRepository(private val context: Context) {
 
     fun currentlyReading(): Flow<List<Book>> = bookDao.currentlyReading()
 
+    fun allCurrentlyReading(): Flow<List<Book>> = bookDao.allCurrentlyReading()
+
     fun search(query: String): Flow<List<Book>> = bookDao.search(query)
 
     fun booksInCollection(collectionId: Long): Flow<List<Book>> =
