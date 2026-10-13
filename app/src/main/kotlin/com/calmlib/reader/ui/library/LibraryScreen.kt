@@ -66,6 +66,7 @@ fun LibraryScreen(
     val books by viewModel.books.collectAsStateWithLifecycle()
     val currentlyReading by viewModel.currentlyReading.collectAsStateWithLifecycle()
     val readingRecently by viewModel.readingRecently.collectAsStateWithLifecycle()
+    val readingAll by viewModel.readingAll.collectAsStateWithLifecycle()
     val sortField by viewModel.sortField.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
@@ -94,6 +95,8 @@ fun LibraryScreen(
 
     // Two pages: the bookcase you curate (home) and the whole library.
     var home by rememberSaveable { mutableStateOf(true) }
+    // The third page, between the shelf and the library: every book being read.
+    var reading by rememberSaveable { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
     var showMore by remember { mutableStateOf(false) }
@@ -159,7 +162,7 @@ fun LibraryScreen(
         ) {
             // The two pages are the title: tap the grey one to go there.
             Row(Modifier.weight(1f), verticalAlignment = Alignment.Bottom) {
-                if (selectedCollection != null && !home) {
+                if (selectedCollection != null && !home && !reading) {
                     Text(
                         text = selectedCollection.name,
                         style = CalmTypography.libraryTitle.copy(fontSize = 26.sp),
@@ -167,21 +170,24 @@ fun LibraryScreen(
                         overflow = TextOverflow.Ellipsis,
                     )
                 } else {
-                    PageTitle("My shelf", home) { home = true; showMore = false; showSort = false }
-                    Spacer(Modifier.width(16.dp))
-                    PageTitle("Library", !home) { home = false; showMore = false }
+                    PageTitle("Shelf", home) { home = true; reading = false; showMore = false; showSort = false }
+                    Spacer(Modifier.width(14.dp))
+                    PageTitle("Reading", reading) { home = false; reading = true; showMore = false; showSort = false }
+                    Spacer(Modifier.width(14.dp))
+                    PageTitle("Library", !home && !reading) { home = false; reading = false; showMore = false }
                 }
             }
             if (!selectionMode) {
                 HeaderWord(if (showSearch) "Done" else "Search") {
-                    if (home) home = false
+                    home = false; reading = false
                     showSearch = !showSearch
                     if (!showSearch) viewModel.setSearch("")
                     showMore = false
                 }
                 Spacer(Modifier.width(6.dp))
                 HeaderWord(if (showMore) "Close" else "More") {
-                    showMore = !showMore
+                    // The menu lives on the Library page, so More from the shelf or Reading goes there.
+                    if (home || reading) { home = false; reading = false; showMore = true } else showMore = !showMore
                     showSort = false
                 }
             }
@@ -196,6 +202,14 @@ fun LibraryScreen(
                 onBookClick = onBookClick,
                 onBookLongClick = { longPressBook = it },
                 onGoToLibrary = { home = false },
+                modifier = Modifier.weight(1f),
+            )
+        } else if (reading) {
+            ReadingPage(
+                books = readingAll,
+                onBookClick = onBookClick,
+                onBookLongClick = { longPressBook = it },
+                onGoToLibrary = { reading = false },
                 modifier = Modifier.weight(1f),
             )
         } else {
@@ -442,7 +456,7 @@ private fun PageTitle(label: String, selected: Boolean, onClick: () -> Unit) {
     Column(Modifier.width(IntrinsicSize.Max).clickable(onClick = onClick)) {
         Text(
             text = label,
-            style = CalmTypography.libraryTitle.copy(fontSize = 26.sp, color = if (selected) Ink else Color(0xFF777777)),
+            style = CalmTypography.libraryTitle.copy(fontSize = 23.sp, color = if (selected) Ink else Color(0xFF777777)),
             maxLines = 1,
         )
         Spacer(Modifier.height(3.dp))

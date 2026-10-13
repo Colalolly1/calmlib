@@ -180,8 +180,8 @@ class ReaderActivity : ComponentActivity() {
     private data class ReaderLocation(val chapter: Int, val page: Int, val charOffset: Int)
     private var backTarget = mutableStateOf<ReaderLocation?>(null)
 
-    /** Set by the JS bridge when a tap followed a link; the tap-zone handler
-     *  stands down so the same tap doesn't also turn the page. */
+    /** Set when a centre-band tap followed a link; the tap-zone handler stands
+     *  down so the same tap doesn't also open the controls. */
     @Volatile private var lastLinkTapMs = 0L
     private var fullscreenImageUrl = mutableStateOf<String?>(null)
 
@@ -204,6 +204,11 @@ class ReaderActivity : ComponentActivity() {
      *  pushed by the JS bridge on every page change. This — not the page index —
      *  is the durable reading position that gets persisted and restored. */
     @Volatile private var lastCharOffset = -1
+
+    /** The offset the current page itself reported: -1 on a page with no text
+     *  (a full-page picture), where lastCharOffset still holds the page before's.
+     *  Bookmarks use this, so on a picture page they fall back to the page number. */
+    @Volatile private var pageCharOffset = -1
 
     /** Page-change events since the last autosave; position is flushed to the DB
      *  every few turns so even a crash/kill can't lose more than a few pages. */
@@ -388,7 +393,7 @@ class ReaderActivity : ComponentActivity() {
                     onTocNavigate = { entry -> navigateToTocEntry(entry) },
                     onAddBookmark = {
                         persistableBook()?.let { b ->
-                            val charOffset = if (isPdf.value || !hasLiveContent) -1 else lastCharOffset
+                            val charOffset = if (isPdf.value || !hasLiveContent) -1 else pageCharOffset
                             lifecycleScope.launch {
                                 bookRepo.addBookmark(b.id, currentPage.intValue, currentChapter, "Page ${currentPage.intValue + 1}", charOffset)
                             }
@@ -508,7 +513,8 @@ class ReaderActivity : ComponentActivity() {
                 return true
             }
         }
-        // After following a link, Back returns to the page the link was on.
+        // After following a link, Back returns to the page the link was on
+        // (until the next page turn, which clears backTarget).
         if (keyCode == KeyEvent.KEYCODE_BACK && backTarget.value != null) {
             goBack()
             return true
@@ -852,15 +858,18 @@ class ReaderActivity : ComponentActivity() {
             goToPage(page)
             return
         }
-        val useChar = charOffset >= 0
+        // Offset 0 is the chapter start: page 0, even when the first text sits
+        // after a full-page picture.
+        val useChar = charOffset > 0
+        val fallbackPage = if (charOffset == 0) 0 else page
         if (chapter != currentChapter) {
             currentChapter = chapter.coerceIn(0, (totalChapters - 1).coerceAtLeast(0))
             if (useChar) loadSection(currentChapter, initialCharOffset = charOffset.toFloat())
-            else loadSection(currentChapter, initialPage = page)
+            else loadSection(currentChapter, initialPage = fallbackPage)
         } else if (useChar) {
             webView?.evaluateJavascript("CalmReader.goToCharOffset($charOffset)", null)
         } else {
-            goToPage(page)
+            goToPage(fallbackPage)
         }
     }
 
@@ -873,22 +882,27 @@ class ReaderActivity : ComponentActivity() {
     /**
      * A tapped link inside the book. [path] is the target file (empty for a
      * link within this chapter), [anchor] the fragment id. Links to the start
-     * of a chapter have no anchor.
+     * of a chapter have no anchor. False when the link leads nowhere, so the
+     * tap still counts as an ordinary tap.
      */
-    private fun followInternalLink(path: String, anchor: String) {
-        if (isPdf.value || !hasLiveContent) return
-        val target = if (path.isEmpty()) currentChapter else chapterIndexForPath(path) ?: return
-        backTarget.value = ReaderLocation(currentChapter, currentPage.intValue, lastCharOffset)
+    private fun followInternalLink(path: String, anchor: String): Boolean {
+        if (isPdf.value || !hasLiveContent) return false
+        val target = if (path.isEmpty()) currentChapter else chapterIndexForPath(path) ?: return false
+        backTarget.value = ReaderLocation(currentChapter, currentPage.intValue, pageCharOffset)
         if (target == currentChapter) {
             if (anchor.isEmpty()) goToPage(0)
             else webView?.evaluateJavascript("CalmReader.goToAnchor(${org.json.JSONObject.quote(anchor)})") { r ->
                 // No such anchor here: nothing moved, so there is nothing to go back to.
-                if (jsReturnedFalse(r)) runOnUiThread { backTarget.value = null }
+                if (jsReturnedFalse(r)) runOnUiThread {
+                    backTarget.value = null
+                    lastLinkTapMs = 0L
+                }
             }
         } else {
             currentChapter = target
             loadSection(target, anchor = anchor.ifEmpty { null })
         }
+        return true
     }
 
     /** Spine index of the extracted chapter file at [path], or null. */
@@ -916,6 +930,8 @@ class ReaderActivity : ComponentActivity() {
             webView?.evaluateJavascript("CalmReader.nextPage()") { result ->
                 runOnUiThread {
                     if (!jsReturnedFalse(result)) {
+                        // Reading on: Back no longer returns to a link's origin.
+                        backTarget.value = null
                         sessionPageTurns++
                     } else if (currentChapter < totalChapters - 1) {
                         android.util.Log.d("CalmNav", "chapter-advance next: $currentChapter -> ${currentChapter + 1} (js=$result)")
@@ -939,7 +955,9 @@ class ReaderActivity : ComponentActivity() {
         } else {
             webView?.evaluateJavascript("CalmReader.prevPage()") { result ->
                 runOnUiThread {
-                    if (jsReturnedFalse(result) && currentChapter > 0) {
+                    if (!jsReturnedFalse(result)) {
+                        backTarget.value = null
+                    } else if (currentChapter > 0) {
                         backTarget.value = null
                         currentChapter--
                         loadSection(currentChapter, goToEnd = true)
@@ -1309,6 +1327,7 @@ class ReaderActivity : ComponentActivity() {
             ${readerHead(s)}</head><body class="paginated">$safeHtml</body></html>""".trimIndent()
         val gen = ++loadGeneration
         lastCharOffset = -1   // stale offsets must not leak across section loads
+        pageCharOffset = -1
         hasLiveContent = false
         pendingGoToEnd = false
         pendingAnchor = null
@@ -1546,6 +1565,7 @@ class ReaderActivity : ComponentActivity() {
 
         val gen = ++loadGeneration
         lastCharOffset = -1   // stale offsets must not leak across chapter loads
+        pageCharOffset = -1
         hasLiveContent = false
         pendingGoToEnd = goToEnd
         pendingAnchor = anchor
@@ -1804,6 +1824,7 @@ class ReaderActivity : ComponentActivity() {
                 fun onPageChanged(page: Int, total: Int, charOffset: Int) {
                     hasLiveContent = true
                     if (charOffset >= 0) lastCharOffset = charOffset
+                    pageCharOffset = charOffset
                     runOnUiThread {
                         rendererRecoveryTotal = 0   // content is alive again
                         currentPage.intValue = page
@@ -1825,11 +1846,13 @@ class ReaderActivity : ComponentActivity() {
 
                 @JavascriptInterface
                 fun onLinkTapped(path: String, anchor: String) {
-                    // Stamp before hopping threads, like onImageTapped: the
-                    // pending tap-zone runnable must see it and stand down.
-                    lastLinkTapMs = System.currentTimeMillis()
                     android.util.Log.d("CalmNav", "onLinkTapped path=$path anchor=$anchor")
-                    runOnUiThread { followInternalLink(path, anchor) }
+                    // Stamped only when the link really moved the reader, so a
+                    // dead link doesn't swallow the tap. Posted now, this runs
+                    // before the tap-zone runnable, which waits 160ms.
+                    runOnUiThread {
+                        if (followInternalLink(path, anchor)) lastLinkTapMs = System.currentTimeMillis()
+                    }
                 }
 
                 @JavascriptInterface
@@ -1980,14 +2003,16 @@ class ReaderActivity : ComponentActivity() {
                     // is invisible next to the E-Ink refresh itself.
                     postDelayed({
                         if (fullscreenImageUrl.value != null) return@postDelayed
-                        // A followed link already acted on this tap, in any zone.
-                        if (System.currentTimeMillis() - lastLinkTapMs < 450) return@postDelayed
                         val inTurnZone = x < w * 0.40f || x > w * 0.60f
-                        // Stand down for an image tap ONLY in the centre band.
-                        // Deferring in the turn zones made full-page pictures
-                        // (covers, plates) impossible to page past: the image
-                        // absorbed every tap and the book was stuck.
-                        if (!inTurnZone && System.currentTimeMillis() - lastImageTapMs < 450) return@postDelayed
+                        // Links and pictures act only from the centre band
+                        // (reader.js uses the same split), so stand down only
+                        // there. Deferring in the turn zones made full-page
+                        // pictures (covers, plates) impossible to page past:
+                        // the image absorbed every tap and the book was stuck.
+                        if (!inTurnZone) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastLinkTapMs < 450 || now - lastImageTapMs < 450) return@postDelayed
+                        }
                         android.util.Log.d("CalmNav", "tapZone x=$x w=$w")
                         when {
                             x < w * 0.40f -> prevPage()

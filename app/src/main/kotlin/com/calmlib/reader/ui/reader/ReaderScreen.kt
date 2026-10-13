@@ -240,18 +240,27 @@ fun ReaderScreenFull(
 
         // After following a link in the book: one tap returns to where you were.
         // Bottom centre is the controls zone, so it never blocks a page turn.
+        // The chip is drawn inside the footer so it never hides the last line;
+        // its touch area reaches 48dp by extending invisibly upward.
         if (showBackChip && !anyOverlay && errorMessage == null) {
             Box(
                 Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 4.dp)
-                    .sizeIn(minWidth = 96.dp, minHeight = 48.dp)
-                    .background(Color.Black)
-                    .clickable(onClick = onBack)
-                    .padding(horizontal = 20.dp),
-                contentAlignment = Alignment.Center,
+                    .height(48.dp)
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.BottomCenter,
             ) {
-                Text("Back", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 14.sp))
+                Box(
+                    Modifier
+                        .height(ReaderFooterHeight)
+                        .padding(vertical = 4.dp)
+                        .sizeIn(minWidth = 96.dp)
+                        .background(Color.Black)
+                        .padding(horizontal = 20.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Back", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 13.sp, lineHeight = 15.sp))
+                }
             }
         }
 

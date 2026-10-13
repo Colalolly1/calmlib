@@ -409,8 +409,10 @@ var CalmReader = {
                   '-webkit-column-break-before: auto !important; -webkit-column-break-after: auto !important; -webkit-column-break-inside: auto !important; ' +
                   'column-span: none !important; -webkit-column-span: none !important; ' +
                   '} ' +
-            // Publisher greys go faint or outlined on this panel.
-            'body * { color: #000 !important; } ' +
+            // Publisher greys go faint or outlined on this panel. Backgrounds go
+            // too, or light-on-dark text would become black on black.
+            // .highlight keeps its tint: it is more specific.
+            'body * { color: #000 !important; background-color: transparent !important; } ' +
             'body img, body svg, body video, body canvas { ' +
                   'max-width: 100% !important; ' +
                   'max-height: ' + imgMax + ' !important; ' +
@@ -517,7 +519,9 @@ var CalmReader = {
         // with; that is a no-op, so a restored position is never reflowed away.
         var sig = this._styleSigOf(fontSize, lineSpacing, marginH, marginV, fontFamily);
         if (this._styleAppliedOnce && this._styleSig === sig) return;
-        var shouldAnchor = !!this._styleAppliedOnce;
+        // No page grid yet means no "where am I": an anchor taken mid-load
+        // sent the reader to the chapter start. The pending restore wins.
+        var shouldAnchor = !!(this._styleAppliedOnce && this._paginated);
         this._styleAppliedOnce = true;
         this._styleSig = sig;
         var anchor = shouldAnchor ? this._captureAnchor() : null;
@@ -559,7 +563,7 @@ var CalmReader = {
         // has is a no-op; only genuine toggles reflow and anchor.
         var sig = !!justify + '|' + !!hyphenation + '|' + !!bionic;
         if (this._textOptsAppliedOnce && this._textOptsSig === sig) return;
-        var shouldAnchor = !!this._textOptsAppliedOnce;
+        var shouldAnchor = !!(this._textOptsAppliedOnce && this._paginated);
         this._textOptsAppliedOnce = true;
         this._textOptsSig = sig;
         var anchor = shouldAnchor ? this._captureAnchor() : null;
@@ -1041,13 +1045,18 @@ document.addEventListener('DOMContentLoaded', function() {
     }, 100);
 
     // Links inside the book (contents pages, footnotes) are followed by the
-    // app, which knows the chapters and offers a way back. Capture phase, so a
-    // linked picture doesn't also open the image viewer. Web links go nowhere
-    // (no browser here) and the tap falls through to the page-turn zones.
+    // app, which knows the chapters and offers a way back. Like pictures, only
+    // the centre band follows a link: the left/right zones always turn the
+    // page, even over a contents list. Capture phase, so a linked picture
+    // doesn't also open the image viewer. Web links and dead links go nowhere
+    // (no browser here) and the tap falls through as an ordinary tap.
     document.addEventListener('click', function(e) {
         var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
         if (!a) return;
         e.preventDefault();
+        var w = window.innerWidth || 480;
+        var x = (e.clientX != null) ? e.clientX : w / 2;
+        if (x < w * 0.40 || x > w * 0.60) return;
         var raw = a.getAttribute('href') || '';
         var path, id;
         try {
@@ -1055,6 +1064,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (raw.length < 2) return;   // href="#" leads nowhere
                 path = '';
                 id = decodeURIComponent(raw.substring(1));
+                if (!document.getElementById(id) && !document.getElementsByName(id).length) return;
             } else if (a.protocol === 'file:') {
                 path = decodeURIComponent(a.pathname);
                 id = a.hash ? decodeURIComponent(a.hash.substring(1)) : '';

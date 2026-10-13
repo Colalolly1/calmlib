@@ -17,9 +17,9 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
-
 private const val TWO_WEEKS_MS = 14L * 24 * 60 * 60 * 1000
+
+@OptIn(ExperimentalCoroutinesApi::class, kotlinx.coroutines.FlowPreview::class)
 class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     private val bookRepo = BookRepository(app)
     private val settingsRepo = SettingsRepository(app)
@@ -89,7 +89,11 @@ class LibraryViewModel(app: Application) : AndroidViewModel(app) {
     val currentlyReading: StateFlow<List<Book>> = bookRepo.currentlyReading()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    /** Unfinished books opened in the last two weeks, most recent first (the home page's Currently reading). */
+    /** Every unfinished book that has been opened, most recent first: the Reading page. */
+    val readingAll: StateFlow<List<Book>> = bookRepo.allCurrentlyReading()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Unfinished books opened in the last two weeks, most recent first (the top shelf of the bookcase). */
     val readingRecently: StateFlow<List<Book>> = bookRepo.allCurrentlyReading()
         .map { list ->
             val since = System.currentTimeMillis() - TWO_WEEKS_MS

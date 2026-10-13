@@ -41,6 +41,7 @@ private const val MIN_SHELVES = 3
 private val CASE_MARGIN = 16.dp
 private val SIDE_BOARD = 9.dp
 private val INNER_PAD = 12.dp
+private val RIBBON_HEADROOM = 10.dp
 private val BackPanel = Color(0xFFF1F1F1)
 private val Bead = Color(0xFFE2E2E2)
 private val Wood = Color(0xFF2B2B2B)
@@ -66,7 +67,13 @@ fun BookcaseScreen(
         val innerWidth = maxWidth - CASE_MARGIN * 2 - SIDE_BOARD * 2 - INNER_PAD * 2
         val coverWidth = ((innerWidth - 14.dp * (PER_SHELF - 1)) / PER_SHELF).coerceAtMost(132.dp)
         val coverHeight = coverWidth * 1.5f
-        val shelves = max(MIN_SHELVES, ceil(books.size / PER_SHELF.toFloat()).toInt())
+        // The books being read stand on the top shelf, each with a ribbon in it;
+        // the rest of the chosen books fill the shelves below.
+        val readingShelf = reading.take(PER_SHELF)
+        val readingIds = readingShelf.map { it.id }.toSet()
+        val rows = (if (readingShelf.isEmpty()) emptyList() else listOf(readingShelf)) +
+            books.filter { it.id !in readingIds }.chunked(PER_SHELF)
+        val shelves = max(MIN_SHELVES, rows.size)
 
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
@@ -79,12 +86,10 @@ fun BookcaseScreen(
                     )
                 }
             }
-            if (reading.isNotEmpty()) {
-                item { CurrentlyReading(reading, onBookClick) }
-            }
             item {
                 Bookcase(
-                    books = books,
+                    rows = rows,
+                    ribbonShelf = readingShelf.isNotEmpty(),
                     shelves = shelves,
                     coverWidth = coverWidth,
                     coverHeight = coverHeight,
@@ -98,12 +103,16 @@ fun BookcaseScreen(
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("❧", style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 15.sp, color = Color(0xFF555555)))
                     Spacer(Modifier.height(8.dp))
+                    val last = reading.firstOrNull()
                     Text(
-                        text = when (books.size) {
-                            0 -> "An empty shelf is a promise."
-                            1 -> "One book waiting for you."
+                        text = when {
+                            last != null -> "Last read: ${last.displayTitle}, ${(last.progress * 100).toInt().coerceIn(0, 100)}%, ${lastReadLabel(last.lastRead)}."
+                            books.isEmpty() -> "An empty shelf is a promise."
+                            books.size == 1 -> "One book waiting for you."
                             else -> "${books.size} books waiting for you."
                         },
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = CASE_MARGIN + 6.dp),
                         style = TextStyle(fontFamily = CalmFonts.serif, fontStyle = FontStyle.Italic, fontSize = 12.sp, color = Color(0xFF777777)),
                     )
                 }
@@ -115,7 +124,8 @@ fun BookcaseScreen(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Bookcase(
-    books: List<Book>,
+    rows: List<List<Book>>,
+    ribbonShelf: Boolean,
     shelves: Int,
     coverWidth: Dp,
     coverHeight: Dp,
@@ -123,7 +133,6 @@ private fun Bookcase(
     onBookLongClick: (Book) -> Unit,
     onGoToLibrary: () -> Unit,
 ) {
-    val rows = books.chunked(PER_SHELF)
     Column(Modifier.fillMaxWidth().padding(horizontal = CASE_MARGIN)) {
         Crown()
         // IntrinsicSize.Min lets the side boards stretch to the full height of the shelves.
@@ -132,10 +141,13 @@ private fun Bookcase(
             Column(Modifier.weight(1f)) {
                 repeat(shelves) { i ->
                     val row = rows.getOrNull(i) ?: emptyList()
+                    // The reading shelf stands its books a little lower, so the
+                    // ribbons peeking out of them stay clear of the lights.
+                    val headroom = if (ribbonShelf && i == 0) RIBBON_HEADROOM else 0.dp
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .height(coverHeight + 26.dp)
+                            .height(coverHeight + 26.dp + headroom)
                             .drawBehind { backPanel(lights = i == 0) }
                             .padding(horizontal = INNER_PAD),
                         contentAlignment = Alignment.BottomStart,
@@ -154,7 +166,7 @@ private fun Bookcase(
                             verticalAlignment = Alignment.Bottom,
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
                         ) {
-                            row.forEach { book -> StandingBook(book, coverWidth, coverHeight, onBookClick, onBookLongClick) }
+                            row.forEach { book -> StandingBook(book, coverWidth, coverHeight, ribbon = ribbonShelf && i == 0, onBookClick, onBookLongClick) }
                             // A part-filled shelf gets one small thing in the gap, like a real one.
                             if (row.isNotEmpty() && row.size < PER_SHELF) {
                                 Spacer(Modifier.weight(1f))
@@ -183,6 +195,7 @@ private fun StandingBook(
     book: Book,
     coverWidth: Dp,
     coverHeight: Dp,
+    ribbon: Boolean,
     onBookClick: (Book) -> Unit,
     onBookLongClick: (Book) -> Unit,
 ) {
@@ -197,6 +210,34 @@ private fun StandingBook(
     ) {
         Box(Modifier.padding(start = 3.dp, top = 3.dp).width(w).height(h).background(Color(0xFFB8B8B8)))
         BookCover(book = book, width = w, height = h)
+        if (ribbon) Ribbon(w, h)
+    }
+}
+
+/**
+ * A ribbon bookmark: it peeks out above the book and falls a little way down
+ * the cover, ending in a forked tail. Dark with a white edge so it shows on
+ * any cover.
+ */
+@Composable
+private fun Ribbon(bookWidth: Dp, bookHeight: Dp) {
+    Canvas(Modifier.width(bookWidth).height(bookHeight).offset(y = (-7).dp)) {
+        val ribbonW = 8.dp.toPx()
+        val left = size.width * 0.18f
+        val bottom = size.height * 0.34f
+        val notch = ribbonW * 0.7f
+        val path = Path().apply {
+            moveTo(left, 0f)
+            lineTo(left + ribbonW, 0f)
+            lineTo(left + ribbonW, bottom)
+            lineTo(left + ribbonW / 2, bottom - notch)
+            lineTo(left, bottom)
+            close()
+        }
+        drawPath(path, Color.White, style = Stroke(width = 3.dp.toPx()))
+        drawPath(path, Color(0xFF1A1A1A))
+        // a fold where it comes out of the pages
+        drawLine(Color(0xFF6E6E6E), Offset(left, 7.dp.toPx()), Offset(left + ribbonW, 7.dp.toPx()), strokeWidth = 1.dp.toPx())
     }
 }
 
@@ -311,12 +352,19 @@ private fun Crown() {
             Modifier.fillMaxWidth().height(22.dp).background(Wood).drawBehind { woodGrain(vertical = false, lines = 3, seed = 2) },
             contentAlignment = Alignment.Center,
         ) {
+            // A pale plate with dark lettering and a fine inner rule: pale text
+            // on the dark wood came out outlined on the e-ink panel.
             Box(
-                Modifier.background(Wood).border(0.8.dp, Color(0xFFBDBDBD)).padding(horizontal = 10.dp, vertical = 2.dp),
+                Modifier
+                    .background(Color(0xFFE6E6E6))
+                    .border(0.8.dp, Color(0xFF1A1A1A))
+                    .padding(2.dp)
+                    .border(0.5.dp, Color(0xFF6E6E6E))
+                    .padding(horizontal = 9.dp, vertical = 1.dp),
             ) {
                 Text(
                     "EX LIBRIS",
-                    style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 9.sp, letterSpacing = 3.sp, color = Color(0xFFE6E6E6)),
+                    style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 9.sp, letterSpacing = 3.sp, color = Color(0xFF1A1A1A)),
                 )
             }
         }
@@ -501,50 +549,8 @@ private fun DrawScope.framedPicture() {
     drawCircle(Color(0xFF2B2B2B), radius = fh * 0.08f, center = Offset(left + fw * 0.28f, top + fh * 0.3f))
 }
 
-/**
- * Above the case: every unfinished book opened in the last two weeks, most
- * recent first. The first one keeps the Resume button.
- */
-@Composable
-private fun CurrentlyReading(books: List<Book>, onBookClick: (Book) -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = CASE_MARGIN + 6.dp).padding(bottom = 14.dp)) {
-        Text("CURRENTLY READING", style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 10.sp, letterSpacing = 1.2.sp, color = Color(0xFF777777)))
-        Spacer(Modifier.height(2.dp))
-        books.forEachIndexed { i, book ->
-            if (i > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFFDDDDDD)))
-            ReadingRow(book, resume = i == 0) { onBookClick(book) }
-        }
-    }
-}
-
-@Composable
-private fun ReadingRow(book: Book, resume: Boolean, onClick: () -> Unit) {
-    val pct = (book.progress * 100).toInt().coerceIn(0, 100)
-    val where = when {
-        book.totalPages > 1 && book.currentPage > 0 -> "Page ${book.currentPage} of ${book.totalPages}"
-        pct > 0 -> "$pct% read"
-        else -> "Just started"
-    }
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(book.displayTitle, style = TextStyle(fontFamily = CalmFonts.serif, fontSize = 16.sp, color = Color.Black), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Spacer(Modifier.height(2.dp))
-            Text("$where · ${lastReadLabel(book.lastRead)}", style = TextStyle(fontFamily = CalmFonts.sans, fontSize = 11.sp, color = Color(0xFF777777)))
-        }
-        if (resume) {
-            Spacer(Modifier.width(14.dp))
-            Box(Modifier.background(Color.Black).padding(horizontal = 20.dp, vertical = 9.dp)) {
-                Text("Resume", style = CalmTypography.controlLabel.copy(color = Color.White, fontSize = 13.sp))
-            }
-        }
-    }
-}
-
 /** "today", "yesterday" or "5 days ago", by calendar day. */
-private fun lastReadLabel(time: Long): String {
+internal fun lastReadLabel(time: Long): String {
     val zone = java.time.ZoneId.systemDefault()
     val then = java.time.Instant.ofEpochMilli(time).atZone(zone).toLocalDate()
     val days = java.time.temporal.ChronoUnit.DAYS.between(then, java.time.LocalDate.now(zone)).toInt()
